@@ -38,7 +38,7 @@ const sessionUsd = atom({ plugin: 'model-router', key: 'sessionUsd' } as const, 
 const pin = atom({ plugin: 'model-router', key: 'pin' } as const, rungOf('opus', 'medium'))
 const history = atom({ plugin: 'model-router', key: 'history' } as const, [] as HistoryEntry[])
 
-type Options = { classifier?: string; ceiling?: string; stickiness?: number }
+type Options = { classifier?: string; ceiling?: string; stickiness?: number; routeAgents?: boolean }
 
 async function setMode($: EngineInterface, next: Mode, pinned?: number) {
   await update($, mode, () => next)
@@ -60,6 +60,10 @@ export const register: Register = (on, options) => {
   const opts = (options ?? {}) as Options
   const ceiling = (opts.ceiling ?? 'fable') as ModelKey
   const stickiness = Math.max(0, Number(opts.stickiness ?? 3))
+  const routeAgents = opts.routeAgents !== false
+
+  // agentId -> the rung its task wants, from the spawn prompt. Lost on reload: those agents run unrouted.
+  const agentWants = new Map<string, number>()
 
   // Per-turn escalation signals; a reload resetting them is harmless.
   let failures = 0
@@ -146,9 +150,26 @@ export const register: Register = (on, options) => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
+  // Subagents and workflow agents: grade the task from its spawn prompt (keywords, no model call).
+  // Forks and teammates share the parent's cache and context, so they are left alone.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (routeAgents && !e.fork && !e.isTeammate && started.deny === undefined && started.agentId) {
+      agentWants.set(started.agentId, classifyHeuristic(e.prompt).rung)
+    }
+    return started
+  }).catch(($, e, next) => next(e))
+
   on('turn.step', async function* ($, e, next) {
-    // Subagents keep whatever model their definition asked for.
-    if (e.agentId !== undefined) return yield* next(e)
+    if (e.agentId !== undefined) {
+      // Only ever cheaper than the model the agent would have run on, never dearer: an explicit
+      // model in its definition or workflow call is respected, an inherited one can step down.
+      const want = agentWants.get(e.agentId)
+      const has = rungFromSession(e.model, e.effort)
+      if (want === undefined || has === null || (await read($, mode)) !== 'auto') return yield* next(e)
+      const rung = Math.min(clamp(want, ceiling), has)
+      return yield* next(rung < has ? { ...e, model: modelAt(rung).id, effort: effortAt(rung) } : e)
+    }
 
     const m = await read($, mode)
     const d = await read($, decision)

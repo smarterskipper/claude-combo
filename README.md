@@ -42,7 +42,8 @@ Costs shown are API list prices. On a Max plan they're what the turn would have 
 
 ## Limits
 
-- Subagents and workflow agents are **not** routed: they keep the model their definition (or `CLAUDE_CODE_SUBAGENT_MODEL`) gives them.
+- Subagents and workflow agents **are** routed (setting `routeAgents`, on by default): each task is graded from its spawn prompt by keyword rules (no model call) and the agent steps *down* to the cheapest model that fits. It is never raised above the model it would have used, so an explicit `model:` in an agent definition or workflow call is respected, and forks and teammates are left alone.
+- Agent steps don't appear in the band, only the main conversation's prompts.
 - The mod API is early access and may break on a Claude Code update.
 
 ## Tests

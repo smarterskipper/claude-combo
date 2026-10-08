@@ -75,6 +75,30 @@ describe('model-router', () => {
     expect(sent[0]).toEqual({ model: 'claude-opus-5-5', effort: 'medium' })
   })
 
+  test('an easy subagent task steps down from the inherited model', async ($, on) => {
+    const sent = world(on)
+    on('agent.spawn', () => ({ model: 'opus', agentId: 'a1' }))
+    await $.agent.spawn({ prompt: 'rename the variable foo to bar in utils.ts' } as never)
+    await drain($.turn.step({ ...step, agentId: 'a1' }))
+    expect(sent[0]?.model).toBe('claude-sonnet-5-5')
+  })
+
+  test('a subagent is never moved above the model it would have run on', async ($, on) => {
+    const sent = world(on)
+    on('agent.spawn', () => ({ model: 'haiku', agentId: 'a2' }))
+    await $.agent.spawn({ prompt: 'refactor the auth layer across all services and prove it is safe' } as never)
+    await drain($.turn.step({ ...step, agentId: 'a2', model: 'claude-haiku-5-5', effort: 'low' }))
+    expect(sent[0]).toEqual({ model: 'claude-haiku-5-5', effort: 'low' })
+  })
+
+  test('routeAgents off leaves subagents alone', { options: { routeAgents: false } }, async ($, on) => {
+    const sent = world(on)
+    on('agent.spawn', () => ({ model: 'opus', agentId: 'a3' }))
+    await $.agent.spawn({ prompt: 'rename foo to bar' } as never)
+    await drain($.turn.step({ ...step, agentId: 'a3' }))
+    expect(sent[0]?.model).toBe('claude-opus-5-5')
+  })
+
   test('a risky shell command lifts the rest of the turn to Opus high', async ($, on) => {
     const sent = world(on)
     on('tool.call', () => ({ result: { stdout: '', stderr: '', interrupted: false }, isError: false }) as never)
