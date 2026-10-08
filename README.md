@@ -1,10 +1,10 @@
 # claude-combo
 
-My Claude Code setup in one marketplace: four plugins that work together, plus the rules that stop them fighting.
+A Claude Code setup in one marketplace: four plugins that work together, plus the rules that stop them fighting.
 
 | Plugin | What it does | Source |
 |---|---|---|
-| **model-router** | Routes each turn to the cheapest model + effort that fits (Haiku → Sonnet → Opus → Fable). Draws a 2-row colored band above the prompt: the latest prompt's arrow to its model, plus recent prompts with per-prompt cost. | Fork of [mod-squad/model-router](https://github.com/TroyJLorents-GH/mod-squad) (this repo, private: upstream has no license) |
+| **model-router** | Routes each turn to the cheapest model + effort that fits (Haiku → Sonnet → Opus → Fable). Draws a 2-row colored band above the prompt: the latest prompt's arrow to its model, plus recent prompts with per-prompt cost. | Fork of [mod-squad/model-router](https://github.com/TroyJLorents-GH/mod-squad) (modified copy in this repo; the upstream repo has no license file, so it is included as a derivative, with credit, and will be removed on the author's request) |
 | **combo-rules** | Injects the conflict rules at session start (superpowers = process, ponytail = size, ADHD = reply shape). | This repo |
 | **superpowers** | Process skills: brainstorming, TDD, debugging, verification. | [obra/superpowers](https://github.com/obra/superpowers) @ `5bf4e78`, MIT |
 | **ponytail** | Smallest correct diff, no speculative code. | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) @ `e3ba2aa`, MIT |
@@ -13,8 +13,6 @@ My Claude Code setup in one marketplace: four plugins that work together, plus t
 The three upstream plugins are pinned to the commits tested together; nothing of theirs is copied here.
 
 ## Install (new machine)
-
-The repo is private, so git on that machine must be able to read it (`gh auth login` or a credential helper).
 
 ```
 /plugin marketplace add smarterskipper/claude-combo
