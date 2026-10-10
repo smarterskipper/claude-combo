@@ -15,14 +15,11 @@ const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
 const SPAN = 48
 const CHUNK = 2
 
-// A new highlighted line slides its gradient one SPAN every SWEEP_MS, at one steady speed,
-// SWEEPS times, then holds still.
+// Highlighted lines on screen slide their gradient one SPAN every SWEEP_MS, all the time.
 const FRAME_MS = 50
-const SWEEP_MS = 800
-const SWEEPS = 3
-const SWEEP_TOTAL = SWEEP_MS * SWEEPS
+const SWEEP_MS = 400
 
-// Bumped every frame while a line is sweeping; only sweeping lines read it, so only they redraw.
+// Bumped every frame while a highlighted line is on screen; only those lines read it, so only they redraw.
 const tick = atom({ plugin: 'blue-questions', key: 'tick' } as const, 0)
 
 const hex = (n: number) => Math.round(n).toString(16).padStart(2, '0')
@@ -136,9 +133,7 @@ const split = (text: string): Part[] => {
 }
 
 export const register: Register = on => {
-  // When each highlighted line was first drawn, by message id and part.
-  const firstSeen = new Map<string, number>()
-  let lastNew = -Infinity
+  let lastDrawn = -Infinity
   let frames: { cancel: () => void } | null = null
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
@@ -146,28 +141,17 @@ export const register: Register = on => {
 
     if (e.props.isSummary || parts.every(p => p.kind === 'text')) return next(e)
 
-    // No clock means no sweep, never no highlight.
-    const now = await $.clock.now().catch(() => null)
-    let isSweeping = false
-    const phases = parts.map((part, n) => {
-      if (part.kind === 'text' || now === null) return 0
-      const key = `${e.requestId}:${n}`
-      if (!firstSeen.has(key)) {
-        if (firstSeen.size > 5000) firstSeen.clear()
-        firstSeen.set(key, now)
-        lastNew = now
-      }
-      const age = now - firstSeen.get(key)!
-      if (age >= SWEEP_TOTAL) return 0
-      isSweeping = true
-      return age / SWEEP_MS
-    })
+    // No clock means a still gradient, never no highlight; a line scrolled out of view holds still.
+    const now = e.props.onScreen === null ? null : await $.clock.now().catch(() => null)
+    const phase = now === null ? 0 : now / SWEEP_MS
 
-    if (isSweeping) {
+    if (now !== null) {
+      lastDrawn = now
       await read($, tick)
+      // The timer runs while something on screen redraws from it, and stops a frame after nothing does.
       frames ??= $.clock.every(FRAME_MS, () => {
         void $.clock.now().then(t => {
-          if (t - lastNew > SWEEP_TOTAL + FRAME_MS) {
+          if (t - lastDrawn > FRAME_MS * 2) {
             frames?.cancel()
             frames = null
           }
@@ -192,7 +176,7 @@ export const register: Register = on => {
 
           // Where chunk i sits in the repeating gradient, slid back by the sweep's phase.
           const at = (i: number) => {
-            const t = (i * CHUNK) / SPAN - phases[n]!
+            const t = (i * CHUNK) / SPAN - phase
             return t - Math.floor(t)
           }
 

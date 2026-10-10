@@ -37,7 +37,7 @@ They're still in the git history if you ever want one back.
 - blue-questions adds a short section to Claude's instructions asking it to start those lines with ❓ (question), 👉 (action item for you) or ✅ (finished work). A marked line is always highlighted, wherever it sits, and the mark is hidden. Unmarked lines fall back to phrase guesses (`LABEL` / `ASK` for amber, `DONE_START` / `DONE_IS` for green in `plugins/blue-questions/hooks/register.tsx`), which can miss.
 - The instruction isn't added under `claude -p` or where nothing draws the reply, so marks never show raw there.
 - Green skips progress notes between tool calls (a block ending in `:`, or "Merged. Running the tests"), promises ("I'll…", "once…") and negations ("not done yet").
-- A newly drawn highlighted line slides its glow across itself at one steady speed (one pass every 0.8 s, 3 passes), then holds still. Colors sit by character position, so a line still streaming in doesn't slide. Only sweeping lines redraw, and the frame timer stops once nothing is sweeping. After a restart or resume, highlighted lines already on screen sweep once more.
+- Highlighted lines on screen keep their glow sliding along all the time (one pass every 0.4 s). Lines scrolled out of view hold still, and the frame timer stops when no highlighted line is on screen. Colors sit by character position, so a line still streaming in doesn't jump.
 - The mod API is early access and may break on a Claude Code update.
 
 ## Tests

@@ -84,25 +84,33 @@ test('the instruction to mark lines is added to the system prompt', async ($, on
   expect(marks?.text).toContain('✅')
 })
 
-test('a new highlighted line sweeps a glow across, then settles to the still gradient', async ($, on) => {
+test('highlighted lines on screen keep sweeping, one pass every 400 ms', async ($, on) => {
   engine(on)
   const clock = mock.clock(on)
-  const ui = await $.ui.mount({
-    plugin: 'blue-questions',
-    surface: 'terminal',
-    component: 'AssistantMessage',
-    props: { text: '❓ Which branch should I use for the release?', isFirstOfReply: true },
-  })
+  const mount = (onScreen?: null) =>
+    $.ui.mount({
+      plugin: 'blue-questions',
+      surface: 'terminal',
+      component: 'AssistantMessage',
+      props: { text: '❓ Which branch should I use for the release?', isFirstOfReply: true, ...(onScreen === null ? { onScreen } : {}) },
+    })
   // the colors of the line's chunks, in order
-  const colors = async () => (JSON.stringify(await ui.drawn()).match(/#[0-9a-f]{6}/g) ?? []).join(' ')
+  const colors = async (ui: any) => (JSON.stringify(await ui.drawn()).match(/#[0-9a-f]{6}/g) ?? []).join(' ')
 
-  const still = await colors()
-  await clock.advance(150)
-  const moving = await colors()
-  expect(moving).not.toBe(still)
+  const ui = await mount()
+  const start = await colors(ui)
+  await clock.advance(100)
+  expect(await colors(ui)).not.toBe(start)
+  await clock.advance(300)
+  expect(await colors(ui)).toBe(start)
+  await clock.advance(10_000 + 100)
+  expect(await colors(ui)).not.toBe(start)
 
-  await clock.advance(10_000)
-  expect(await colors()).toBe(still)
+  // a line scrolled out of view holds still
+  const hidden = await mount(null)
+  const before = await colors(hidden)
+  await clock.advance(100)
+  expect(await colors(hidden)).toBe(before)
 })
 
 test('a line that grows while streaming keeps its colors in place', async ($, on) => {
