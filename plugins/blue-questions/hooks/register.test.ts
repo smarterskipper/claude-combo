@@ -1,4 +1,4 @@
-import { test, expect } from 'claude-code/testing'
+import { test, expect, mock } from 'claude-code/testing'
 
 const draw = async ($: any, text: string) =>
   JSON.stringify(
@@ -82,4 +82,25 @@ test('the instruction to mark lines is added to the system prompt', async ($, on
   expect(marks?.text).toContain('❓')
   expect(marks?.text).toContain('👉')
   expect(marks?.text).toContain('✅')
+})
+
+test('a new highlighted line sweeps a glow across, then settles to the still gradient', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on)
+  const ui = await $.ui.mount({
+    plugin: 'blue-questions',
+    surface: 'terminal',
+    component: 'AssistantMessage',
+    props: { text: '❓ Which branch should I use for the release?', isFirstOfReply: true },
+  })
+  // the colors of the line's chunks, in order
+  const colors = async () => (JSON.stringify(await ui.drawn()).match(/#[0-9a-f]{6}/g) ?? []).join(' ')
+
+  const still = await colors()
+  await clock.advance(150)
+  const moving = await colors()
+  expect(moving).not.toBe(still)
+
+  await clock.advance(10_000)
+  expect(await colors()).toBe(still)
 })

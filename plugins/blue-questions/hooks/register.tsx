@@ -1,4 +1,4 @@
-import type { Register } from 'claude-code'
+import { atom, read, update, type Register } from 'claude-code'
 
 type RGB = [number, number, number]
 type Kind = 'text' | 'question' | 'action' | 'done'
@@ -10,6 +10,15 @@ const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
   action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [251, 191, 36]] },
   done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [74, 222, 128]] },
 }
+
+// A new highlighted line sweeps its gradient across itself SWEEPS times, then holds still.
+const FRAME_MS = 50
+const SWEEP_MS = 500
+const SWEEPS = 3
+const SWEEP_TOTAL = SWEEP_MS * SWEEPS
+
+// Bumped every frame while a line is sweeping; only sweeping lines read it, so only they redraw.
+const tick = atom({ plugin: 'blue-questions', key: 'tick' } as const, 0)
 
 const hex = (n: number) => Math.round(n).toString(16).padStart(2, '0')
 
@@ -122,19 +131,45 @@ const split = (text: string): Part[] => {
 }
 
 export const register: Register = on => {
-  // Ask Claude to mark the lines, wherever something draws the reply.
-  on('prompt.compose', async ($, e, next) => {
-    const result = await next(e)
-    // Nothing draws the reply under -p or for the engine's own analysis calls, so a mark would show raw.
-    if (e.surfaces.length === 0 || e.traits.some(t => t === 'print' || t === 'analysis')) return result
-    if (result.sections.some(s => s.id === 'blue-questions:marks')) return result
-    return { sections: [...result.sections, { id: 'blue-questions:marks', text: MARKS, scope: 'session' as const }] }
-  })
+  // When each highlighted line was first drawn, by message id and part.
+  const firstSeen = new Map<string, number>()
+  let lastNew = -Infinity
+  let frames: { cancel: () => void } | null = null
 
-  on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const parts = split(e.props.text)
 
     if (e.props.isSummary || parts.every(p => p.kind === 'text')) return next(e)
+
+    // No clock means no sweep, never no highlight.
+    const now = await $.clock.now().catch(() => null)
+    let isSweeping = false
+    const phases = parts.map((part, n) => {
+      if (part.kind === 'text' || now === null) return 0
+      const key = `${e.requestId}:${n}`
+      if (!firstSeen.has(key)) {
+        if (firstSeen.size > 5000) firstSeen.clear()
+        firstSeen.set(key, now)
+        lastNew = now
+      }
+      const age = now - firstSeen.get(key)!
+      if (age >= SWEEP_TOTAL) return 0
+      isSweeping = true
+      return (age % SWEEP_MS) / SWEEP_MS
+    })
+
+    if (isSweeping) {
+      await read($, tick)
+      frames ??= $.clock.every(FRAME_MS, () => {
+        void $.clock.now().then(t => {
+          if (t - lastNew > SWEEP_TOTAL + FRAME_MS) {
+            frames?.cancel()
+            frames = null
+          }
+          return update($, tick, n => n + 1)
+        })
+      })
+    }
 
     const { Box, Text, Markdown } = $.ui.resolve(e)
 
@@ -151,12 +186,18 @@ export const register: Register = on => {
           const chunks: string[] = []
           for (let i = 0; i < chars.length; i += step) chunks.push(chars.slice(i, i + step).join(''))
 
+          // Slide the gradient back by the sweep's phase, wrapping round; phase 0 is the still gradient.
+          const at = (i: number) => {
+            const t = (chunks.length === 1 ? 0.5 : i / (chunks.length - 1)) - phases[n]!
+            return t < 0 ? t + 1 : t
+          }
+
           return (
             <Box key={`h${n}`}>
               <Text color={bar} bold>{'▌ '}</Text>
               <Text bold>
                 {chunks.map((chunk, i) => (
-                  <Text bold color={shade(stops, chunks.length === 1 ? 0.5 : i / (chunks.length - 1))}>
+                  <Text bold color={shade(stops, at(i))}>
                     {chunk}
                   </Text>
                 ))}
@@ -167,4 +208,14 @@ export const register: Register = on => {
       </Box>
     )
   })
+
+  // Ask Claude to mark the lines, wherever something draws the reply.
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    // Nothing draws the reply under -p or for the engine's own analysis calls, so a mark would show raw.
+    if (e.surfaces.length === 0 || e.traits.some(t => t === 'print' || t === 'analysis')) return result
+    if (result.sections.some(s => s.id === 'blue-questions:marks')) return result
+    return { sections: [...result.sections, { id: 'blue-questions:marks', text: MARKS, scope: 'session' as const }] }
+  })
+
 }

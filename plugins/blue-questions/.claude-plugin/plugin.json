@@ -1,1 +1,1 @@
-{ "name": "blue-questions", "version": "0.4.0", "description": "Glowing side bars so the important lines stand out: blue for Claude's questions, amber for action items for you, green for finished work." }
+{ "name": "blue-questions", "version": "0.5.0", "description": "Glowing side bars so the important lines stand out: blue for Claude's questions, amber for action items for you, green for finished work.", "types": "./types/index.d.ts" }
