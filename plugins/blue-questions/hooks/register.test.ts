@@ -84,7 +84,7 @@ test('the instruction to mark lines is added to the system prompt', async ($, on
   expect(marks?.text).toContain('✅')
 })
 
-test('highlighted lines on screen keep sweeping, one pass every 400 ms', async ($, on) => {
+test('highlighted lines on screen keep sweeping, one pass every 800 ms', async ($, on) => {
   engine(on)
   const clock = mock.clock(on)
   const mount = (onScreen?: null) =>
@@ -101,7 +101,7 @@ test('highlighted lines on screen keep sweeping, one pass every 400 ms', async (
   const start = await colors(ui)
   await clock.advance(100)
   expect(await colors(ui)).not.toBe(start)
-  await clock.advance(300)
+  await clock.advance(700)
   expect(await colors(ui)).toBe(start)
   await clock.advance(10_000 + 100)
   expect(await colors(ui)).not.toBe(start)
@@ -133,10 +133,10 @@ test('finished-work lines slide at half the speed of questions and action items'
   const done = await mount('✅ The release build is uploaded and processing.')
   const [ask0, done0] = [await colors(ask), await colors(done)]
 
-  await clock.advance(400)
+  await clock.advance(800)
   expect(await colors(ask)).toBe(ask0)
   expect(await colors(done)).not.toBe(done0)
 
-  await clock.advance(400)
+  await clock.advance(800)
   expect(await colors(done)).toBe(done0)
 })

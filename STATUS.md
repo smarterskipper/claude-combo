@@ -26,3 +26,4 @@
 - 2026-10-10 tune: the 0.3 s sweep was too fast and the streaming re-spread looked like a slowdown after it. Colors now sit by character position (48-char repeating gradient) so streaming lines don't slide; one steady sweep, 800 ms per pass × 3. 7 tests pass.
 - 2026-10-10 tune: owner wanted the motion always on and 2× faster, not just on new lines. Glow now slides continuously on every on-screen highlighted line, 400 ms per pass; off-screen lines hold still; timer stops when none are visible. 7 tests pass.
 - 2026-10-10 tune: finished-work (green) slowed to 800 ms per pass; questions and action items stay at 400 ms. 8 tests pass.
+- 2026-10-10 tune: questions and action items 800 ms per pass, finished work 1600 ms. 8 tests pass.

@@ -6,9 +6,9 @@ type Kind = 'text' | 'question' | 'action' | 'done'
 // Gradient stops: deep -> bright -> deep, repeating every SPAN characters,
 // which reads as a soft glow rather than a flat color.
 const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[]; sweepMs: number }> = {
-  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [59, 130, 246]], sweepMs: 400 },
-  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [245, 158, 11]], sweepMs: 400 },
-  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [34, 197, 94]], sweepMs: 800 },
+  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [59, 130, 246]], sweepMs: 800 },
+  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [245, 158, 11]], sweepMs: 800 },
+  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [34, 197, 94]], sweepMs: 1600 },
 }
 
 // Colors sit by character position, not line length, so a line still streaming in doesn't slide.
