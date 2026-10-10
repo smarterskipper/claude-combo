@@ -69,6 +69,17 @@ const plain = (line: string) =>
     .replace(/\*\*|__|`/g, '')
     .replace(/^(\s*)[-*+]\s+(\[ \]\s*)?/, '$1• ')
 
+// Claude marks the lines itself (see MARKS below); a marked line is always highlighted
+// and the mark is hidden. The phrase guesses above only catch lines left unmarked.
+const MARK_KIND: Record<string, Exclude<Kind, 'text'>> = { '❓': 'question', '👉': 'action', '✅': 'done' }
+const MARKED = /^(\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*|__)?)\s*(❓|👉|✅)\uFE0F?\s*/u
+
+const MARKS = `Highlight marks: the person's terminal draws these as colored bars and hides the mark itself.
+- Start a line with ❓ when it asks the person a question that needs their answer.
+- Start a line with 👉 when it is something the person has to do (an action item for them, not for you). In a list of these, mark every item.
+- Start a line with ✅ when it reports work you finished.
+Put the mark first on the line, after any list marker. Mark every such line in text the person reads, wherever it sits in the reply, and no other lines. Never put marks in code blocks, tables, commit messages, PR text, files or tool input.`
+
 type Part = { kind: Kind; text: string }
 
 const split = (text: string): Part[] => {
@@ -89,6 +100,11 @@ const split = (text: string): Part[] => {
     if (/^\s*(```|~~~)/.test(line)) isFenced = !isFenced
 
     let kind: Kind = 'text'
+    const mark = isFenced ? null : MARKED.exec(line)
+    if (mark) {
+      parts.push({ kind: MARK_KIND[mark[2]!]!, text: mark[1] + line.slice(mark[0].length) })
+      continue
+    }
     if (!isFenced && i >= tail && isQuestion(line)) kind = 'question'
     else if (!isFenced && (isAction(line) || (inActionList && isListItem(line)))) kind = 'action'
     else if (!isFenced && !isNote && isDone(line)) kind = 'done'
@@ -106,6 +122,15 @@ const split = (text: string): Part[] => {
 }
 
 export const register: Register = on => {
+  // Ask Claude to mark the lines, wherever something draws the reply.
+  on('prompt.compose', async ($, e, next) => {
+    const result = await next(e)
+    // Nothing draws the reply under -p or for the engine's own analysis calls, so a mark would show raw.
+    if (e.surfaces.length === 0 || e.traits.some(t => t === 'print' || t === 'analysis')) return result
+    if (result.sections.some(s => s.id === 'blue-questions:marks')) return result
+    return { sections: [...result.sections, { id: 'blue-questions:marks', text: MARKS, scope: 'session' as const }] }
+  })
+
   on('ui.render', { component: 'AssistantMessage' }, ($, e, next) => {
     const parts = split(e.props.text)
 

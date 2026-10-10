@@ -53,3 +53,33 @@ test('finished-work lines are drawn green; unfinished ones are not', async ($, o
   expect(await draw($, 'Merged. Running the tests it touches:')).not.toContain('#22c55e')
   expect(await draw($, "I'll report back when that's done.")).not.toContain('#22c55e')
 })
+
+test('marked lines are always highlighted, wherever they sit, and the mark is hidden', async ($, on) => {
+  engine(on)
+
+  const mid = await draw($, 'Intro.\n\n❓ Which branch should I use?\n\nMore text after it.')
+  expect(mid).toContain('#3b82f6')
+  expect(mid).not.toContain('❓')
+
+  // phrasing the guesses would never catch
+  expect(await draw($, '👉 Grab the code off your phone.')).toContain('#f59e0b')
+  expect(await draw($, '- 👉 **Swap** the SIM tonight')).toContain('#f59e0b')
+  expect(await draw($, '✅ Kitchen sink sorted.')).toContain('#22c55e')
+  expect(await draw($, '✅ Kitchen sink sorted.')).not.toContain('✅')
+
+  // a mark inside a code block is left alone
+  expect(await draw($, '```\n❓ not a question\n```')).not.toContain('#3b82f6')
+})
+
+test('the instruction to mark lines is added to the system prompt', async ($, on) => {
+  on('prompt.compose', ($: any, e: any) => ({ sections: [{ id: 'intro', text: 'engine', scope: 'shared' as const }] }))
+
+  const facts = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', tools: [], outputStyle: null, traits: [] }
+  const { sections } = await $.prompt.compose({ ...facts, surfaces: ['terminal'] })
+  expect((await $.prompt.compose({ ...facts, surfaces: [] })).sections.some(s => s.id === 'blue-questions:marks')).toBe(false)
+  const marks = sections.find(s => s.id === 'blue-questions:marks')
+  expect(marks?.scope).toBe('session')
+  expect(marks?.text).toContain('❓')
+  expect(marks?.text).toContain('👉')
+  expect(marks?.text).toContain('✅')
+})

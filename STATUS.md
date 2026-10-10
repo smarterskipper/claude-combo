@@ -15,3 +15,7 @@
 ## 2026-10-10 — blue-questions 0.3.0: green for finished work
 - Green bar on lines reporting finished work ("Merged #3.", "Both are done:", "is now live"); skips progress notes, promises and negations. ~2.5% of prose lines in recent transcripts. 3 tests pass.
 - Follow-up needed: tune DONE_START / DONE_IS if green shows up where it shouldn't
+
+## 2026-10-10 — blue-questions 0.4.0: Claude marks the lines
+- Highlights were inconsistent because they guessed from phrasing. A `prompt.compose` section now asks Claude to start questions with ❓, action items with 👉 and finished work with ✅; marked lines always get their bar (anywhere in the reply) and the mark is hidden. Phrase guesses stay as fallback. 5 tests pass.
+- Follow-up needed: watch for lines Claude forgets to mark; tighten the MARKS wording if it happens

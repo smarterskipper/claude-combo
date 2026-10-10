@@ -34,7 +34,8 @@ They're still in the git history if you ever want one back.
 
 ## Limits
 
-- blue-questions spots action items and finished work by phrasing, so it can miss one or highlight a line that isn't one. Tune the `LABEL` / `ASK` (amber) and `DONE_START` / `DONE_IS` (green) patterns in `plugins/blue-questions/hooks/register.tsx`.
+- blue-questions adds a short section to Claude's instructions asking it to start those lines with ❓ (question), 👉 (action item for you) or ✅ (finished work). A marked line is always highlighted, wherever it sits, and the mark is hidden. Unmarked lines fall back to phrase guesses (`LABEL` / `ASK` for amber, `DONE_START` / `DONE_IS` for green in `plugins/blue-questions/hooks/register.tsx`), which can miss.
+- The instruction isn't added under `claude -p` or where nothing draws the reply, so marks never show raw there.
 - Green skips progress notes between tool calls (a block ending in `:`, or "Merged. Running the tests"), promises ("I'll…", "once…") and negations ("not done yet").
 - The mod API is early access and may break on a Claude Code update.
 
