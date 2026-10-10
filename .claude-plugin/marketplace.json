@@ -4,6 +4,7 @@
   "plugins": [
     { "name": "model-router", "source": "./plugins/model-router", "description": "Routes each turn to the cheapest fitting Claude model; colored routing band above the prompt." },
     { "name": "combo-rules", "source": "./plugins/combo-rules", "description": "Settles conflicts between superpowers, ponytail and i-have-adhd." },
+    { "name": "blue-questions", "source": "./plugins/blue-questions", "description": "Glowing blue bar on Claude's questions, amber bar on action items for you." },
     { "name": "superpowers", "source": { "source": "github", "repo": "obra/superpowers", "sha": "5bf4e78011075bcfc0dc295f0724994cd123ee71" } },
     { "name": "ponytail", "source": { "source": "github", "repo": "DietrichGebert/ponytail", "sha": "e3ba2aa6f1e6f0bc4d69eb09c9f0d0a93af56156" } },
     { "name": "i-have-adhd", "source": { "source": "github", "repo": "ayghri/i-have-adhd", "sha": "839872f9d1cd634fed642b4589ce7226199cc15f" } }
