@@ -21,5 +21,5 @@
 - Follow-up needed: watch for lines Claude forgets to mark; tighten the MARKS wording if it happens
 
 ## 2026-10-10 — blue-questions 0.5.0: glow sweep on new lines
-- A new highlighted line sweeps its gradient across itself 3× (500 ms each, 50 ms frames), then settles to the still gradient. Only sweeping lines redraw; the timer stops when idle; no clock → still gradient, never a lost highlight. 6 tests pass.
+- A new highlighted line sweeps its gradient across itself 6× (300 ms each, 40 ms frames), then settles to the still gradient. Only sweeping lines redraw; the timer stops when idle; no clock → still gradient, never a lost highlight. 6 tests pass.
 - Follow-up needed: tune SWEEP_MS / SWEEPS from how it looks live

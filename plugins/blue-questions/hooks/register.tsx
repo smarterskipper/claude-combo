@@ -12,9 +12,9 @@ const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
 }
 
 // A new highlighted line sweeps its gradient across itself SWEEPS times, then holds still.
-const FRAME_MS = 50
-const SWEEP_MS = 500
-const SWEEPS = 3
+const FRAME_MS = 40
+const SWEEP_MS = 300
+const SWEEPS = 6
 const SWEEP_TOTAL = SWEEP_MS * SWEEPS
 
 // Bumped every frame while a line is sweeping; only sweeping lines read it, so only they redraw.
