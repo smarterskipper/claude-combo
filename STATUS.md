@@ -9,4 +9,5 @@
 ## 2026-10-10 — blue-questions plugin
 - New plugin `blue-questions` 0.2.0: blue glowing bar on Claude's trailing questions, amber bar on action items for the user ("Next action:", "Needs you:" lists, "you need to…", "ready for you to merge"). 2 tests pass.
 - Installed user-wide as `blue-questions@claude-combo`
+- Dropped model-router, combo-rules, ponytail, i-have-adhd (none were installed anymore); reasons in README "Dropped"
 - Follow-up needed: tune the action-item phrase list if it misses or over-highlights lines
