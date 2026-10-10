@@ -1,52 +1,45 @@
 # claude-combo
 
-A Claude Code setup in one marketplace: four plugins that work together, plus the rules that stop them fighting.
+A Claude Code setup in one marketplace.
 
 | Plugin | What it does | Source |
 |---|---|---|
-| **model-router** | Routes each turn to the cheapest model + effort that fits (Haiku → Sonnet → Opus → Fable). Draws a 2-row colored band above the prompt: the latest prompt's arrow to its model, plus recent prompts with per-prompt cost. | Fork of [mod-squad/model-router](https://github.com/TroyJLorents-GH/mod-squad) (modified copy in this repo; the upstream repo has no license file, so it is included as a derivative, with credit, and will be removed on the author's request) |
-| **combo-rules** | Injects the conflict rules at session start (superpowers = process, ponytail = size, ADHD = reply shape). | This repo |
+| **blue-questions** | Draws Claude's closing question with a glowing blue bar and action items for you (lines like "Next action:", lists under "Needs you:", "ready for you to merge") with an amber bar, so neither gets lost in a long reply. | This repo |
 | **superpowers** | Process skills: brainstorming, TDD, debugging, verification. | [obra/superpowers](https://github.com/obra/superpowers) @ `5bf4e78`, MIT |
-| **ponytail** | Smallest correct diff, no speculative code. | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) @ `e3ba2aa`, MIT |
-| **i-have-adhd** | Replies shaped for ADHD: next action first, numbered steps. | [ayghri/i-have-adhd](https://github.com/ayghri/i-have-adhd) @ `839872f`, MIT |
 
-The three upstream plugins are pinned to the commits tested together; nothing of theirs is copied here.
+superpowers is pinned to a tested commit; nothing of it is copied here.
 
 ## Install (new machine)
 
 ```
 /plugin marketplace add smarterskipper/claude-combo
-/plugin install model-router@claude-combo
-/plugin install combo-rules@claude-combo
+/plugin install blue-questions@claude-combo
 /plugin install superpowers@claude-combo
-/plugin install ponytail@claude-combo
-/plugin install i-have-adhd@claude-combo
 ```
 
-Pick the **user** scope for each so they're on in every session.
+Pick the **user** scope for each so they're on in every session. If you already have superpowers installed from its own marketplace, skip it here so its hooks don't run twice.
 
-If you already have superpowers / ponytail / i-have-adhd installed from their own marketplaces, uninstall those first so the hooks don't run twice. If your `~/.claude/CLAUDE.md` already has the "Ponytail × Superpowers × ADHD" section, skip `combo-rules` or delete that section.
+## Dropped (2026-10-10)
 
-## Fixes over the upstream model-router
+This marketplace used to ship four more plugins. They're gone, and here's why:
 
-- **Band instead of a side pane.** Two short colored rows above the prompt; closes any leftover pane from the old version.
-- **Per-prompt cost + routing arrow.** Arrow length and color scale with price; dashed while the turn runs.
-- **Redo step-up.** A prompt starting like "that's wrong" / "still broken" / "try again" sends that turn to the next model up and marks the previous prompt ✗. A free quality check: no extra model calls.
-- **Manifest settings restored** (classifier, ceiling, stickiness show in `/config`).
+| Plugin | Why it was dropped |
+|---|---|
+| **model-router** | Routing turns to cheaper models backfired: the lower models pushed back on doing the work instead of doing it. |
+| **ponytail** | No real change in how Claude worked with it on vs. off. |
+| **i-have-adhd** | Its reply shaping ended up making Claude's communication worse, not clearer. |
+| **combo-rules** | Only existed to settle conflicts between superpowers, ponytail and i-have-adhd. With two of those gone, there's nothing to settle. |
 
-`/route` shows why the current model was picked; `/route off`, `/route auto`, `/route pin opus high`.
-
-Costs shown are API list prices. On a Max plan they're what the turn would have cost, not what you pay.
+They're still in the git history if you ever want one back.
 
 ## Limits
 
-- Subagents and workflow agents **are** routed (setting `routeAgents`, on by default): each task is graded from its spawn prompt by keyword rules (no model call) and the agent steps *down* to the cheapest model that fits. It is never raised above the model it would have used, so an explicit `model:` in an agent definition or workflow call is respected, and forks and teammates are left alone.
-- Agent steps don't appear in the band, only the main conversation's prompts.
+- blue-questions spots action items by phrasing, so it can miss one or highlight a line that isn't one. Tune the `LABEL` / `ASK` patterns in `plugins/blue-questions/hooks/register.tsx`.
 - The mod API is early access and may break on a Claude Code update.
 
 ## Tests
 
 ```
-claude plugin test plugins/model-router
-claude plugin validate plugins/model-router
+claude plugin test plugins/blue-questions
+claude plugin validate plugins/blue-questions
 ```
