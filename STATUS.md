@@ -11,3 +11,7 @@
 - Installed user-wide as `blue-questions@claude-combo`
 - Dropped model-router, combo-rules, ponytail, i-have-adhd (none were installed anymore); reasons in README "Dropped"
 - Follow-up needed: tune the action-item phrase list if it misses or over-highlights lines
+
+## 2026-10-10 — blue-questions 0.3.0: green for finished work
+- Green bar on lines reporting finished work ("Merged #3.", "Both are done:", "is now live"); skips progress notes, promises and negations. ~2.5% of prose lines in recent transcripts. 3 tests pass.
+- Follow-up needed: tune DONE_START / DONE_IS if green shows up where it shouldn't

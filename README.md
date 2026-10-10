@@ -4,7 +4,7 @@ A Claude Code setup in one marketplace.
 
 | Plugin | What it does | Source |
 |---|---|---|
-| **blue-questions** | Draws Claude's closing question with a glowing blue bar and action items for you (lines like "Next action:", lists under "Needs you:", "ready for you to merge") with an amber bar, so neither gets lost in a long reply. | This repo |
+| **blue-questions** | Draws Claude's closing question with a glowing blue bar and action items for you (lines like "Next action:", lists under "Needs you:", "ready for you to merge") with an amber bar, and finished work ("Merged #3.", "Both are done:", "The fix is now live.") with a green bar, so none of them gets lost in a long reply. | This repo |
 | **superpowers** | Process skills: brainstorming, TDD, debugging, verification. | [obra/superpowers](https://github.com/obra/superpowers) @ `5bf4e78`, MIT |
 
 superpowers is pinned to a tested commit; nothing of it is copied here.
@@ -34,7 +34,8 @@ They're still in the git history if you ever want one back.
 
 ## Limits
 
-- blue-questions spots action items by phrasing, so it can miss one or highlight a line that isn't one. Tune the `LABEL` / `ASK` patterns in `plugins/blue-questions/hooks/register.tsx`.
+- blue-questions spots action items and finished work by phrasing, so it can miss one or highlight a line that isn't one. Tune the `LABEL` / `ASK` (amber) and `DONE_START` / `DONE_IS` (green) patterns in `plugins/blue-questions/hooks/register.tsx`.
+- Green skips progress notes between tool calls (a block ending in `:`, or "Merged. Running the tests"), promises ("I'll…", "once…") and negations ("not done yet").
 - The mod API is early access and may break on a Claude Code update.
 
 ## Tests
