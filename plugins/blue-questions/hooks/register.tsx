@@ -3,18 +3,23 @@ import { atom, read, update, type Register } from 'claude-code'
 type RGB = [number, number, number]
 type Kind = 'text' | 'question' | 'action' | 'done'
 
-// Gradient stops across a highlighted line: deep -> bright -> back,
+// Gradient stops: deep -> bright -> deep, repeating every SPAN characters,
 // which reads as a soft glow rather than a flat color.
 const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
-  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [96, 165, 250]] },
-  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [251, 191, 36]] },
-  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [74, 222, 128]] },
+  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [59, 130, 246]] },
+  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [245, 158, 11]] },
+  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [34, 197, 94]] },
 }
 
-// A new highlighted line sweeps its gradient across itself SWEEPS times, then holds still.
-const FRAME_MS = 40
-const SWEEP_MS = 300
-const SWEEPS = 6
+// Colors sit by character position, not line length, so a line still streaming in doesn't slide.
+const SPAN = 48
+const CHUNK = 2
+
+// A new highlighted line slides its gradient one SPAN every SWEEP_MS, at one steady speed,
+// SWEEPS times, then holds still.
+const FRAME_MS = 50
+const SWEEP_MS = 800
+const SWEEPS = 3
 const SWEEP_TOTAL = SWEEP_MS * SWEEPS
 
 // Bumped every frame while a line is sweeping; only sweeping lines read it, so only they redraw.
@@ -155,7 +160,7 @@ export const register: Register = on => {
       const age = now - firstSeen.get(key)!
       if (age >= SWEEP_TOTAL) return 0
       isSweeping = true
-      return (age % SWEEP_MS) / SWEEP_MS
+      return age / SWEEP_MS
     })
 
     if (isSweeping) {
@@ -182,14 +187,13 @@ export const register: Register = on => {
 
           const { bar, stops } = LOOK[part.kind]
           const chars = [...plain(part.text)]
-          const step = Math.max(1, Math.ceil(chars.length / 24))
           const chunks: string[] = []
-          for (let i = 0; i < chars.length; i += step) chunks.push(chars.slice(i, i + step).join(''))
+          for (let i = 0; i < chars.length; i += CHUNK) chunks.push(chars.slice(i, i + CHUNK).join(''))
 
-          // Slide the gradient back by the sweep's phase, wrapping round; phase 0 is the still gradient.
+          // Where chunk i sits in the repeating gradient, slid back by the sweep's phase.
           const at = (i: number) => {
-            const t = (chunks.length === 1 ? 0.5 : i / (chunks.length - 1)) - phases[n]!
-            return t < 0 ? t + 1 : t
+            const t = (i * CHUNK) / SPAN - phases[n]!
+            return t - Math.floor(t)
           }
 
           return (

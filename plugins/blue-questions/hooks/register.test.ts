@@ -104,3 +104,12 @@ test('a new highlighted line sweeps a glow across, then settles to the still gra
   await clock.advance(10_000)
   expect(await colors()).toBe(still)
 })
+
+test('a line that grows while streaming keeps its colors in place', async ($, on) => {
+  engine(on)
+  const colors = async (text: string) => (JSON.stringify(await draw($, text)).match(/#[0-9a-f]{6}/g) ?? [])
+
+  const short = await colors('❓ Which branch should I use?')
+  const long = await colors('❓ Which branch should I use for the release build this week?')
+  expect(long.slice(0, short.length)).toEqual(short)
+})
