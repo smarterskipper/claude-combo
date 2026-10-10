@@ -2,7 +2,7 @@
   "name": "claude-combo",
   "owner": { "name": "smarterskipper" },
   "plugins": [
-    { "name": "blue-questions", "source": "./plugins/blue-questions", "description": "Glowing blue bar on Claude's questions, amber bar on action items for you." },
+    { "name": "blue-questions", "source": "./plugins/blue-questions", "description": "Glowing side bars: blue for Claude's questions, amber for action items for you, green for finished work." },
     { "name": "superpowers", "source": { "source": "github", "repo": "obra/superpowers", "sha": "5bf4e78011075bcfc0dc295f0724994cd123ee71" } }
   ]
 }

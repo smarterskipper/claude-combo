@@ -1,1 +1,1 @@
-{ "name": "blue-questions", "version": "0.2.0", "description": "Draws Claude's questions in glowing blue and action items for you in glowing amber, each with a side bar, so they're easy to spot." }
+{ "name": "blue-questions", "version": "0.3.0", "description": "Glowing side bars so the important lines stand out: blue for Claude's questions, amber for action items for you, green for finished work." }

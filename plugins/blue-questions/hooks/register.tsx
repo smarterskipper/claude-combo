@@ -1,13 +1,14 @@
 import type { Register } from 'claude-code'
 
 type RGB = [number, number, number]
-type Kind = 'text' | 'question' | 'action'
+type Kind = 'text' | 'question' | 'action' | 'done'
 
 // Gradient stops across a highlighted line: deep -> bright -> back,
 // which reads as a soft glow rather than a flat color.
-const LOOK: Record<'question' | 'action', { bar: string; stops: RGB[] }> = {
+const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
   question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [96, 165, 250]] },
   action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [251, 191, 36]] },
+  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [74, 222, 128]] },
 }
 
 const hex = (n: number) => Math.round(n).toString(16).padStart(2, '0')
@@ -41,6 +42,22 @@ const isAction = (line: string) => {
   return isProse(line) && !NOT.test(text) && (LABEL.test(text) || ASK.test(text) || /^\s*[-*]\s+\[ \]/.test(line))
 }
 
+// Work Claude reports as finished: "Merged #3.", "Both are done:", "The fix is now live."
+const FINISHED = 'done|finished|fixed|merged|shipped|deployed|installed|pushed|published|uploaded|complete|completed|live|up to date|in place'
+const DONE_START = new RegExp(`^(✅|(all|both|everything('s| is)?)\\s+(\\w+\\s+)?(are\\s+)?(done|finished|fixed|in place)\\b|(done|finished|fixed|merged|shipped|deployed|installed|pushed|published|uploaded)\\b)`, 'i')
+const DONE_IS = new RegExp(`\\b(is|are|'s|was|were|has been|have been) (now )?(all )?(${FINISHED})\\b`, 'i')
+const NOT_DONE = /\b(not|never)\b|n't\b|\bstill\b|\byet\b/i
+// Promises and conditions ("I'll report back when that's done") aren't finished work.
+const LATER = /\b(I'll|I will|will|once|when|after|if|until)\b/i
+// A progress note moves on in the same line: "Merged. Running the tests".
+const MOVING_ON = /(^|[.;!]\s+)(\w+ing|Now|Next|Then)\b/
+
+const isDone = (line: string) => {
+  const text = bare(line)
+  return isProse(line) && !/\?/.test(text.split(/[.!:]/)[0]!) && !NOT_DONE.test(text) && !LATER.test(text) && !MOVING_ON.test(text) &&
+    (DONE_START.test(text) || DONE_IS.test(text))
+}
+
 // A label alone on its line ("**Needs you:**") makes the list under it action items.
 const isActionHeader = (line: string) => LABEL.test(bare(line)) && /:\s*$/.test(bare(line))
 const isListItem = (line: string) => /^\s*([-*+]|\d+[.)])\s+/.test(line)
@@ -60,6 +77,9 @@ const split = (text: string): Part[] => {
   let inActionList = false
   const lines = text.split('\n')
 
+  // A block ending in ":" is a progress note before a tool call, not a report of finished work.
+  const isNote = /:\s*$/.test(text.trimEnd())
+
   // Only the reply's last paragraph can be a question that's waiting on the person.
   let tail = lines.length
   while (tail > 0 && lines[tail - 1]!.trim() === '') tail--
@@ -71,6 +91,7 @@ const split = (text: string): Part[] => {
     let kind: Kind = 'text'
     if (!isFenced && i >= tail && isQuestion(line)) kind = 'question'
     else if (!isFenced && (isAction(line) || (inActionList && isListItem(line)))) kind = 'action'
+    else if (!isFenced && !isNote && isDone(line)) kind = 'done'
 
     // A header's list runs until the first line that isn't a list item.
     if (!isFenced && isActionHeader(line)) inActionList = true
