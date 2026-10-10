@@ -5,19 +5,19 @@ type Kind = 'text' | 'question' | 'action' | 'done'
 
 // Gradient stops: deep -> bright -> deep, repeating every SPAN characters,
 // which reads as a soft glow rather than a flat color.
-const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[] }> = {
-  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [59, 130, 246]] },
-  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [245, 158, 11]] },
-  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [34, 197, 94]] },
+const LOOK: Record<Exclude<Kind, 'text'>, { bar: string; stops: RGB[]; sweepMs: number }> = {
+  question: { bar: '#3b82f6', stops: [[59, 130, 246], [125, 211, 252], [59, 130, 246]], sweepMs: 400 },
+  action: { bar: '#f59e0b', stops: [[245, 158, 11], [253, 224, 71], [245, 158, 11]], sweepMs: 400 },
+  done: { bar: '#22c55e', stops: [[34, 197, 94], [134, 239, 172], [34, 197, 94]], sweepMs: 800 },
 }
 
 // Colors sit by character position, not line length, so a line still streaming in doesn't slide.
 const SPAN = 48
 const CHUNK = 2
 
-// Highlighted lines on screen slide their gradient one SPAN every SWEEP_MS, all the time.
+// Highlighted lines on screen slide their gradient one SPAN every sweepMs (see LOOK), all the time:
+// questions and action items fast, finished work at half their speed.
 const FRAME_MS = 50
-const SWEEP_MS = 400
 
 // Bumped every frame while a highlighted line is on screen; only those lines read it, so only they redraw.
 const tick = atom({ plugin: 'blue-questions', key: 'tick' } as const, 0)
@@ -143,7 +143,6 @@ export const register: Register = on => {
 
     // No clock means a still gradient, never no highlight; a line scrolled out of view holds still.
     const now = e.props.onScreen === null ? null : await $.clock.now().catch(() => null)
-    const phase = now === null ? 0 : now / SWEEP_MS
 
     if (now !== null) {
       lastDrawn = now
@@ -169,7 +168,8 @@ export const register: Register = on => {
             return part.text.trim() === '' ? null : <Markdown key={`m${n}`} text={part.text} />
           }
 
-          const { bar, stops } = LOOK[part.kind]
+          const { bar, stops, sweepMs } = LOOK[part.kind]
+          const phase = now === null ? 0 : now / sweepMs
           const chars = [...plain(part.text)]
           const chunks: string[] = []
           for (let i = 0; i < chars.length; i += CHUNK) chunks.push(chars.slice(i, i + CHUNK).join(''))

@@ -121,3 +121,22 @@ test('a line that grows while streaming keeps its colors in place', async ($, on
   const long = await colors('❓ Which branch should I use for the release build this week?')
   expect(long.slice(0, short.length)).toEqual(short)
 })
+
+test('finished-work lines slide at half the speed of questions and action items', async ($, on) => {
+  engine(on)
+  const clock = mock.clock(on)
+  const mount = (text: string) =>
+    $.ui.mount({ plugin: 'blue-questions', surface: 'terminal', component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  const colors = async (ui: any) => (JSON.stringify(await ui.drawn()).match(/#[0-9a-f]{6}/g) ?? []).join(' ')
+
+  const ask = await mount('👉 Swap the SIM card in the spare phone tonight.')
+  const done = await mount('✅ The release build is uploaded and processing.')
+  const [ask0, done0] = [await colors(ask), await colors(done)]
+
+  await clock.advance(400)
+  expect(await colors(ask)).toBe(ask0)
+  expect(await colors(done)).not.toBe(done0)
+
+  await clock.advance(400)
+  expect(await colors(done)).toBe(done0)
+})
