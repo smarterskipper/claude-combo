@@ -27,3 +27,11 @@
 - 2026-10-10 tune: owner wanted the motion always on and 2× faster, not just on new lines. Glow now slides continuously on every on-screen highlighted line, 400 ms per pass; off-screen lines hold still; timer stops when none are visible. 7 tests pass.
 - 2026-10-10 tune: finished-work (green) slowed to 800 ms per pass; questions and action items stay at 400 ms. 8 tests pass.
 - 2026-10-10 tune: questions and action items 800 ms per pass, finished work 1600 ms. 8 tests pass.
+
+## 2026-10-17 — blue-questions 0.5.1: no cut-off lines in the desktop app, marks reach desktop sessions
+- Cut-off text: highlighted lines were drawn as 2-character colored runs. The desktop app draws a short run with no space as `white-space: pre`, so the line had nowhere to wrap and ran past the reply's edge. Runs are now whole words with the spaces between them bare (`words` in `hooks/classify.ts`); checked against the desktop's own CSS rules in headless Chrome.
+- Text lost from bars: `plain()` dropped every `__`, `**` and backtick, so `__init__.py` showed as `init.py` and `**/*.swift` as `/*.swift`. Code spans now keep every character; only real bold pairs lose their stars.
+- Missed classifications: the marks section was skipped whenever the engine reported `print`, which every desktop-app session does (SDK host), so Claude never marked lines there (0 marked replies in 397 desktop replies). Now skipped only for `/context` and for a session nothing has ever drawn (plain `-p`).
+- Phrase guesses: "None are merged" / "Neither ... is deployed" no longer green; "Nothing needs you" and quoted text ("You must be 18 or older") no longer amber.
+- Classifier moved to `hooks/classify.ts`; `tests/corpus.ts` holds 32 labeled lines. 49 tests pass; tsc clean.
+- Follow-up needed: `/reload-plugins` (or a new session) to load it. The desktop paces transcript redraws to 1 per second, so the sweep animation is ~1 fps there.

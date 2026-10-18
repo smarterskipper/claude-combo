@@ -140,3 +140,69 @@ test('finished-work lines slide at half the speed of questions and action items'
   await clock.advance(800)
   expect(await colors(done)).toBe(done0)
 })
+
+// The desktop draws each colored run as its own span, and a short run with no space in it as
+// `white-space: pre`. Runs that hold spaces, or split a word, leave the line no place to wrap,
+// so it runs past the edge and is cut off. Runs must be whole words, with the spaces between them bare.
+const highlightRuns = async ($: any, surface: 'terminal' | 'desktop', text: string) => {
+  const ui = await $.ui.mount({ plugin: 'blue-questions', surface, component: 'AssistantMessage', props: { text, isFirstOfReply: true } })
+  const rows: any[] = []
+  const walk = (n: any) => {
+    if (!n || typeof n !== 'object') return
+    if (n.type === 'Box' && typeof n.props?.key === 'string' && n.props.key.startsWith('h')) rows.push(n)
+    for (const c of n.children ?? []) walk(c)
+  }
+  walk(await ui.drawn())
+  // the second child of a highlighted row holds the line's text
+  return rows.map(r => (r.children[1].children ?? []) as any[])
+}
+const textOf = (n: any): string => (typeof n === 'string' ? n : (n.children ?? []).map(textOf).join(''))
+
+test('a highlighted line can wrap on every surface: colored runs are whole words, spaces are bare', async ($, on) => {
+  engine(on)
+  const line = '✅ Merged and live on dev since this morning, with every lane green and nothing waiting on you tonight.'
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const [runs] = await highlightRuns($, surface, line)
+    expect(runs!.length).toBeGreaterThan(1)
+    for (const r of runs!) {
+      if (typeof r === 'string') expect(/^\s+$/u.test(r)).toBe(true)
+      else expect(/\s/u.test(textOf(r))).toBe(false)
+    }
+    expect(runs!.map(textOf).join('')).toBe(line.slice(2))
+  }
+})
+
+test('a highlighted line keeps every character of paths, identifiers and code', async ($, on) => {
+  engine(on)
+  const cases: [string, string][] = [
+    ['✅ Saved to `~/apps/blender-5.2.2-linux-x64/blender` and `__init__.py`.', 'Saved to ~/apps/blender-5.2.2-linux-x64/blender and __init__.py.'],
+    ['✅ Fixed the `**/*.swift` glob and MY__VAR in **Settings.swift:42**.', 'Fixed the **/*.swift glob and MY__VAR in Settings.swift:42.'],
+    ['✅ Build 2.331.1 is uploaded, $9.99 a month; see [PR #51](https://github.com/menos-app/menos-api/pull/51).', 'Build 2.331.1 is uploaded, $9.99 a month; see PR #51 (https://github.com/menos-app/menos-api/pull/51).'],
+  ]
+  for (const [line, shown] of cases) {
+    const [runs] = await highlightRuns($, 'desktop', line)
+    expect(runs!.map(textOf).join('')).toBe(shown)
+  }
+})
+
+test('the desktop app gets the instruction to mark lines too', async ($, on) => {
+  on('prompt.compose', ($: any, e: any) => ({ sections: [{ id: 'intro', text: 'engine', scope: 'shared' as const }] }))
+  const facts = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', tools: [], outputStyle: null }
+  const has = async (f: any) => (await $.prompt.compose({ ...facts, ...f })).sections.some((s: any) => s.id === 'blue-questions:marks')
+
+  // the desktop hosts the session over the SDK, so the engine reports `print` there
+  expect(await has({ surfaces: ['desktop'], traits: ['print'] })).toBe(true)
+  // /context measures the prompt and sends nothing
+  expect(await has({ surfaces: ['terminal'], traits: ['analysis'] })).toBe(false)
+})
+
+test('a session the desktop has drawn keeps the instruction while no window shows it', async ($, on) => {
+  engine(on)
+  on('prompt.compose', ($: any, e: any) => ({ sections: [{ id: 'intro', text: 'engine', scope: 'shared' as const }] }))
+  const facts = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', tools: [], outputStyle: null, traits: ['print'] as const }
+  const has = async () => (await $.prompt.compose({ ...facts, surfaces: [] })).sections.some((s: any) => s.id === 'blue-questions:marks')
+
+  expect(await has()).toBe(false)
+  await $.ui.mount({ plugin: 'blue-questions', surface: 'desktop', component: 'AssistantMessage', props: { text: 'Plain text.', isFirstOfReply: true } })
+  expect(await has()).toBe(true)
+})
