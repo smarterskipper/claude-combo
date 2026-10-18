@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Token watchdog: flags workflow agents that look hung (no transcript write for STALE_MIN), looping (> MAX_TURNS assistant turns)
 # or stuck in retries (same label started > MAX_RESTARTS times). Prints findings and exits 1 when any new one appears.
-# Run: python3 watchdog.py   (checks every Claude Code session's workflows under ~/.claude/projects; acks in ~/.claude/watchdog.ack, one "agentId" or "wf:label" per line, are skipped)
+# Run: python3 watchdog.py   (checks every Claude Code session's workflows under ~/.claude/projects; acks in ~/.claude/watchdog.ack, one "agentId", "wf_<id>" (whole workflow) or "wf:label" per line, are skipped)
 # Loop while workflows run: while python3 watchdog.py > /tmp/watchdog.last 2>&1; do sleep 300; done; cat /tmp/watchdog.last
 import json, os, sys, time, glob, collections
 ACK = os.path.expanduser("~/.claude/watchdog.ack")
@@ -31,6 +31,8 @@ for d in glob.glob(os.path.expanduser("~/.claude/projects/*/*/subagents/workflow
             done.add(aid)
             if e.get("key"): dkeys.add(e.get("key"))
     wf = os.path.basename(d)
+    if wf in acked:
+        continue  # whole workflow acked (e.g. a run that was stopped on purpose)
     for lab, n in labels.items():
         if n > MAX_RESTARTS and f"{wf}:{lab}" not in acked:
             found.append(f"RETRIES {wf} label={lab} started {n}x")
