@@ -1,11 +1,12 @@
 # claude-combo
 
-A Claude Code setup in one marketplace.
+A Claude Code setup in one marketplace: reply highlights, superpowers, and the defaults they run with.
 
 | Plugin | What it does | Source |
 |---|---|---|
-| **blue-questions** | Draws Claude's closing question with a glowing blue bar and action items for you (lines like "Next action:", lists under "Needs you:", "ready for you to merge") with an amber bar, and finished work ("Merged #3.", "Both are done:", "The fix is now live.") with a green bar, so none of them gets lost in a long reply. | This repo |
+| **blue-questions** | Reply highlights. Draws Claude's closing question with a glowing blue bar and action items for you (lines like "Next action:", lists under "Needs you:", "ready for you to merge") with an amber bar, and finished work ("Merged #3.", "Both are done:", "The fix is now live.") with a green bar, so none of them gets lost in a long reply. | This repo |
 | **superpowers** | Process skills: brainstorming, TDD, debugging, verification. | [obra/superpowers](https://github.com/obra/superpowers) @ `5bf4e78`, MIT |
+| **combo-defaults** | One-time `/combo-setup`: Opus 5.5 (`claude-opus-5-5`) at high effort, the Proactive output style, and ultracode on by default. | This repo |
 
 superpowers is pinned to a tested commit; nothing of it is copied here.
 
@@ -15,9 +16,30 @@ superpowers is pinned to a tested commit; nothing of it is copied here.
 /plugin marketplace add smarterskipper/claude-combo
 /plugin install blue-questions@claude-combo
 /plugin install superpowers@claude-combo
+/plugin install combo-defaults@claude-combo
 ```
 
 Pick the **user** scope for each so they're on in every session. If you already have superpowers installed from its own marketplace, skip it here so its hooks don't run twice.
+
+Then run `/combo-setup` once (it shows as `/combo-defaults:combo-setup`), or from a clone of this repo:
+
+```
+python3 plugins/combo-defaults/scripts/combo-setup.py --dry-run   # show what would change
+python3 plugins/combo-defaults/scripts/combo-setup.py             # apply
+```
+
+It merges these keys into `~/.claude/settings.json` and leaves every other key where it is, after backing the file up as `settings.json.bak-<timestamp>`:
+
+```json
+{
+  "model": "claude-opus-5-5",
+  "modelSettings": { "claude-opus-5-5": { "effortLevel": "high" } },
+  "outputStyle": "Proactive",
+  "ultracode": true
+}
+```
+
+**Why a setup step:** a plugin's own `settings.json` only honors `agent` and `subagentStatusLine`, so no plugin can set the model, effort, output style or ultracode. They have to live in your user settings. Effort is set per model because a top-level `effortLevel` is ignored for Opus 5.5. `ultracode` only takes effect when workflows are enabled.
 
 ## Dropped (2026-10-10)
 
@@ -30,7 +52,7 @@ This marketplace used to ship four more plugins. They're gone, and here's why:
 | **i-have-adhd** | Its reply shaping ended up making Claude's communication worse, not clearer. |
 | **combo-rules** | Only existed to settle conflicts between superpowers, ponytail and i-have-adhd. With two of those gone, there's nothing to settle. |
 
-They're still in the git history if you ever want one back.
+Their code is kept under the `archive/dev-2026-10-10` and `archive/readme-public-2026-10-10` tags (and in the git history) if you ever want one back.
 
 ## Limits
 
@@ -46,4 +68,6 @@ They're still in the git history if you ever want one back.
 ```
 claude plugin test plugins/blue-questions
 claude plugin validate plugins/blue-questions
+claude plugin validate plugins/combo-defaults
+python3 -m unittest plugins/combo-defaults/tests/test_combo_setup.py
 ```
