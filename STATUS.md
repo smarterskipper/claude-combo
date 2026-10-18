@@ -35,3 +35,10 @@
 - Phrase guesses: "None are merged" / "Neither ... is deployed" no longer green; "Nothing needs you" and quoted text ("You must be 18 or older") no longer amber.
 - Classifier moved to `hooks/classify.ts`; `tests/corpus.ts` holds 32 labeled lines. 49 tests pass; tsc clean.
 - Follow-up needed: `/reload-plugins` (or a new session) to load it. The desktop paces transcript redraws to 1 per second, so the sweep animation is ~1 fps there.
+
+## 2026-10-17 — combo-defaults 0.1.0; combo trimmed to three plugins
+- blue-questions 0.5.0 sweep + 0.5.1 desktop fixes merged to main (PR #7)
+- New plugin `combo-defaults`: `/combo-setup` skill runs `scripts/combo-setup.py`, which merges `model: claude-opus-5-5`, `modelSettings.claude-opus-5-5.effortLevel: high`, `outputStyle: Proactive`, `ultracode: true` into `~/.claude/settings.json` (other keys untouched, timestamped backup, `--dry-run`, no-op when already set). 6 tests pass.
+- It's a setup step because a plugin's settings.json only honors `agent` and `subagentStatusLine`.
+- Stale branches `dev` and `readme-public` (old model-router / ponytail / i-have-adhd / combo-rules code) tagged `archive/dev-2026-10-10` and `archive/readme-public-2026-10-10`; README "Dropped" table points there.
+- Follow-up needed: delete remote branches `dev`, `readme-public`, `sweep`, `fix/blue-questions-wrap-and-marks` if not already gone (tags hold the old code)
