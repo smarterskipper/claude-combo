@@ -42,3 +42,11 @@
 - It's a setup step because a plugin's settings.json only honors `agent` and `subagentStatusLine`.
 - Stale branches `dev` and `readme-public` (old model-router / ponytail / i-have-adhd / combo-rules code) tagged `archive/dev-2026-10-10` and `archive/readme-public-2026-10-10`; README "Dropped" table points there.
 - Follow-up needed: delete remote branches `dev`, `readme-public`, `sweep`, `fix/blue-questions-wrap-and-marks` if not already gone (tags hold the old code)
+
+## 2026-10-17 — process/agent-lanes: the default way of working, as reference files
+- Boston's call: agent lanes are the default for every session (written into ~/.claude/CLAUDE.md "Default way of working"), so they're reference files, not a plugin, skill or command
+- `process/agent-lanes/README.md`: what the process is, how a session uses it (ask the few real questions up front, then autonomous lanes; research and build what's missing when stuck), and stack notes for iOS/Xcode on the remote Mac through `~/bin/xq` (`-derivedDataPath "$CI_DD"` per lane) and .NET memory hygiene (one `dotnet test` at a time, `DOTNET_GCHeapHardLimit`)
+- `agent-lanes-bootstrap.md`: an exact copy of the guide
+- `templates/`: 15 files extracted verbatim from the guide's code blocks, at their target paths, with the STACK blocks left as placeholders. `bash -n` + `dash -n` pass on all 4 .sh; `node --check` passes on build-gallery.mjs; lane.js and review.js are Workflow scripts (top-level `return`/`await`, injected `args`/`agent`), so plain `node --check` rejects them ("Illegal return statement"), but both parse when wrapped in an async function; the JSON files parse
+- No earlier feat/agent-lanes branch or plugins/agent-lanes folder existed, so there was nothing to clean up
+- Follow-up needed: integration-gate.ps1 not syntax-checked (no pwsh on this box); the board page (tools/board/board.html) isn't given in full by the guide and gets written per repo
