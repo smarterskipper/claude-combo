@@ -1,0 +1,21 @@
+{
+  "title": "Project screenshots",
+  "intro": "Captured by each lane's gate at fixed viewports (desktop 1440x900, phone 390x844) unless noted. Merged: on the integration branch. On a lane: committed and reviewed on a lane branch, not merged yet.",
+  "shotRoot": "../../..",
+  "integration": "integration",
+  "sections": [
+    {
+      "id": "login",
+      "chip": "Login",
+      "title": "Login and session restore (AUTH.1, AUTH.2, VS1)",
+      "status": "merged",
+      "commit": "3f2a9c1..b71c0de",
+      "cards": ["AUTH.1", "AUTH.2"],
+      "about": "What it shows, what is placeholder, known issues with card ids (e.g. 'phone footer overlap, board UI07').",
+      "shots": [
+        ["integration/tools/lanes/evidence/auth/auth-2-login-ui/shots/login-desktop.png", "Login, desktop", "wide"],
+        ["integration/tools/lanes/evidence/auth/auth-2-login-ui/shots/login-phone.png", "Login, phone", "phone"]
+      ]
+    }
+  ]
+}

@@ -10,6 +10,10 @@ A Claude Code setup in one marketplace: reply highlights, superpowers, and the d
 
 superpowers is pinned to a tested commit; nothing of it is copied here.
 
+## process/
+
+`process/agent-lanes/` holds the agent-lanes process: parallel lanes, each in its own worktree, with a gate, a two-lens review, fix rounds and an evidence commit per step, and one integration gate. It's the **default way every session works**. `~/.claude/CLAUDE.md` ("Default way of working") points to it, so it's deliberately not a plugin, skill or slash command. The folder has a one-page [README](process/agent-lanes/README.md) with the stack notes (iOS on a remote Mac through `xq`, .NET memory hygiene), the full [bootstrap guide](process/agent-lanes/agent-lanes-bootstrap.md), and `templates/`: every script the guide gives (`lane.js`, `review.js`, the gates, baseline, staged check, new-lane, gallery builder), extracted verbatim.
+
 ## Install (new machine)
 
 ```

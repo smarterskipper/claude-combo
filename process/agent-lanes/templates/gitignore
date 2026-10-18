@@ -1,0 +1,5 @@
+.worktrees/
+.lane.env
+tools/lanes/out/
+tools/gallery/out/
+tools/gallery/node_modules/
