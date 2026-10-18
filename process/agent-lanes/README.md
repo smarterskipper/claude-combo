@@ -50,6 +50,16 @@ Small single-file tasks skip the lane machinery but still follow steps 1, 3, 4 a
 
 The guide doesn't give the board page (`tools/board/board.html`) in full. Write it from section 6.3 after loading the `artifact-capabilities` and `artifact-design` skills.
 
+## Token watchdog
+
+`watchdog.py` (python3, stdlib) flags workflow agents that look hung (no transcript write for 30 min), looping (300+ turns) or stuck retrying (same step started 6+ times), across every session under `~/.claude/projects`. Keep it running in the background whenever workflows run:
+
+```
+while python3 ~/source/repos/claude-combo/process/agent-lanes/watchdog.py > /tmp/watchdog.last 2>&1; do sleep 300; done; cat /tmp/watchdog.last
+```
+
+It exits (waking the session) on a finding: inspect, then stop and relaunch narrower, or ack a legitimately long agent in `~/.claude/watchdog.ack`.
+
 ## Stack notes
 
 These sit next to the guide's own adapters (section 8). They fill the same STACK slots.
