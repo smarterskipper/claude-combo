@@ -21,10 +21,9 @@ for d in glob.glob(os.path.expanduser("~/.claude/projects/*/*/subagents/workflow
             continue
         aid = e.get("agentId")
         if e.get("type") == "started" and aid:
-            k = e.get("key")
-            if k:
-                for old in [a for a, v in started.items() if v[1] == k]:
-                    del started[old]  # superseded by a resumed/relaunched agent for the same step
+            k, lab = e.get("key"), e.get("label", "?")
+            for old in [a for a, v in started.items() if (k and v[1] == k) or v[0] == lab]:
+                del started[old]  # superseded: same step relaunched (resume, or resume after a prompt edit)
             started[aid] = (e.get("label", "?"), k)
             labels[e.get("label", "?")] += 1
         elif aid and e.get("type") in ("result", "error", "skipped", "failed"):
