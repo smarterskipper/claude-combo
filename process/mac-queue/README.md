@@ -24,6 +24,38 @@ If every Mac is full, the job waits in one line on ubuntu-pc, in arrival order, 
 
 The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last so Boston's laptop takes the overflow.
 
+## Full test runs across both Macs
+
+```bash
+xq test fulltest <branch-or-sha>
+xq test fulltest <sha> --bundle commits.bundle    # work that isn't on GitHub yet
+```
+
+Use the session name `fulltest` unless two runs need to go at once: the simulators are named after the session, and a new name's first run takes more than twice as long (150 s against 65 s) while they are made and booted for the first time.
+
+This builds once in the first free Mac's warm lane, copies the app (about 250 MB, through ubuntu-pc) to the other Mac if it has a free slot, and runs `test-without-building` on two simulators per idle Mac. A Mac with another job running gets one simulator, and if the other Mac is full or down everything stays on the building Mac. The result is one pass or fail, with the usual `Executed N tests` and `** TEST SUCCEEDED **` lines and exit code 0 or 1. Logs stay in `~/.cache/xq/test-runs/<id>/`. Run `xq test -h` for the options. Only test runs go through it: signing, archives and TestFlight stay on the MacBook.
+
+How the split stays safe:
+
+- Times come from the last green run, in `~/.cache/xq/timings/`. With no times yet, the whole suite runs as one shard and saves them.
+- The first shard skips what the other shards run, instead of listing what it runs, so a new test always runs somewhere. A run fails if a shard runs nothing, a test runs twice, or under 95% of the last green run's tests ran.
+- A class too big for one shard is split by method (`SessionRenderTests` is 35 s of the 78 s).
+- Tests that read repo files through `#filePath` or `SourceTree` have the build Mac's path compiled in, so their classes stay on the build Mac. The worker finds them by grep on every run. A test that finds repo files some other way fails on the second Mac with "no such file": add its marker to the grep in `xq-test-worker.sh`.
+- A shard that can't launch the test runner gets one more try, because a just-booted simulator sometimes refuses the first launch. A test failure never retries.
+
+Measured at menos-ios fedbaf3e7 (3853 tests, 6 skipped, 0 failed), 2026-11-07, build on the mini:
+
+| Run | Nothing changed | One Swift file changed |
+|---|---|---|
+| Before: `xcodebuild test`, one Mac | 115 s | 134 s |
+| `xq test --one-mac`, 2 simulators | 79 s | |
+| `xq test`, 2 + 2 simulators | 65 s | |
+| `xq test`, MacBook busy, 2 + 1 simulators | | 97 s |
+
+Most of the time left is the build. `-collect-test-diagnostics never` alone saves about 9 s per `xcodebuild` run, and the failure text is still in the log. Xcode's own `-parallel-testing-enabled` doesn't help: 96 s with 4 workers against 90 s without, because it clones and boots simulators on each run and keeps a class on one worker.
+
+Tests: `python3 test-xq-test.py` covers the split and the merge.
+
 ## Adding a Mac
 
 1. At the Mac: turn on Remote Login, add ubuntu-pc's public key, use an admin user.

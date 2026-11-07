@@ -35,6 +35,9 @@ reset() {
 full() { echo "$(cat "$STUB/$1/slots")" > "$STUB/$1/busy"; }
 ran_on() { grep -c "^$1 " "$STUB/log"; }
 
+reset; echo 1 > "$STUB/macbook/busy"; touch "$STUB/mini/down"
+[ "$("$XQ" free)" = "macbook 1 2 1 0" ] && ok "free lists reachable Macs only" || no "free lists reachable Macs only"
+
 reset; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on mini)" = 1 ] && ok "first free Mac in the list wins" || no "first free Mac in the list wins"
 
