@@ -1,0 +1,273 @@
+#!/bin/bash
+# shellcheck disable=SC2088  # every ~ here is meant for the Mac's shell, not this one
+# xq (ubuntu-pc) - sends Mac jobs to whichever build Mac has a free slot.
+# Every Mac keeps its own ~/bin/xq queue, untouched; this only decides which Mac a job goes to.
+#   xq <session> -- <cmd...>        run cmd through a free Mac's queue; if every Mac is full, wait in line here
+#   xq run <session> '<string>'     same for a shell string: what used to follow `ssh macbook`
+#   xq pick <session>               wait for a free Mac, remember it for the session, print its ssh alias
+#                                   (gate scripts: MAC=$(xq pick s), then ssh/scp "$MAC" for the whole run)
+#   xq host <session>               the Mac the session last used (macbook if none)
+#   xq ssh <session> '<string>'     quick read-only command on the session's Mac, no queue
+#   xq cp <session> <src...> <dst>  scp; write the session's Mac as mac:, e.g. mac:/tmp/x.log
+#   xq sim <session>                UDID of the session's simulator on its Mac (no Mac yet: picks a free one)
+#   xq status                       every Mac's slots and queue, and who is waiting here
+#   xq checkin|kick <session>       passed to the Mac holding that session's job
+#   xq gc                           passed to every Mac
+# Which Mac:
+#   XQ_HOST=<alias> set                     that Mac
+#   signing, upload or physical-device job  the MacBook (signing only lives there; a job that hides this inside
+#                                           a script needs XQ_HOST=macbook)
+#   names a simulator UDID or a /tmp/ path  the session's Mac, because that state lives there
+#   anything else                           the session's Mac if free, otherwise the first free Mac in the list
+# The first three go straight to that Mac's own queue. A Mac that is down is skipped. Exit code 255 after a job
+# started means the connection dropped and the job's state is unknown: check `xq status` before retrying.
+# Macs: ~/.config/xq/macs, one ssh alias per line, preferred first. No file means macbook only.
+# Env: XQ_HOST, XQ_MACS, XQ_STATE, XQ_POLL (5 s), XQ_CLAIM_TTL (180 s), XQ_DOWN_LIMIT (60 s), XQ_MAX_RUN and
+# XQ_KICKER (passed to the Mac). State lives in ~/.cache/xq.
+set -u
+MACS_FILE=${XQ_MACS:-$HOME/.config/xq/macs}
+D=${XQ_STATE:-$HOME/.cache/xq}
+SSH=${XQ_SSH:-ssh}; SCP=${XQ_SCP:-scp}
+SIGN_MAC=macbook
+POLL=${XQ_POLL:-5}; CLAIM_TTL=${XQ_CLAIM_TTL:-180}; DOWN_LIMIT=${XQ_DOWN_LIMIT:-60}
+CLAIM_TTL=${CLAIM_TTL%.*}; CLAIM_TTL=${CLAIM_TTL:-0}; DOWN_LIMIT=${DOWN_LIMIT%.*}; DOWN_LIMIT=${DOWN_LIMIT:-0}
+SSHO=(-o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=30 -o ServerAliveCountMax=4)
+SIGN_RE='(^|[^a-z])archive([^a-z]|$)|exportarchive|xcarchive|altool|notarytool|fastlane|testflight\.sh|devicectl|ios-deploy|unlock-keychain|platform=ios([^ a-z\\]|$)|-sdk iphoneos|id=0000[0-9a-f]{4}-|id=[0-9a-f]{40}|/Users/bnaviaux/'
+BOUND_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|/tmp/'
+MAC=""; CLAIM=""; TICKET=""; JOB=""; SIGNING=""; SKIP=" "
+mkdir -p "$D/queue" "$D/claims" "$D/pins"
+
+die() { echo "xq: $*" >&2; exit 1; }
+note() { echo "xq: $*" >&2; }
+check_name() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] || die "session name must match [A-Za-z0-9_-]+: '$1'"; }
+macs() { if [ -s "$MACS_FILE" ]; then sed -e 's/#.*//' "$MACS_FILE" | awk 'NF{print $1}'; else echo "$SIGN_MAC"; fi; }
+pin_get() { cat "$D/pins/$1" 2>/dev/null; }
+pin_set() { echo "$2" > "$D/pins/.$1.$$" && mv "$D/pins/.$1.$$" "$D/pins/$1"; }
+cleanup() { rm -f "${TICKET:-/nonexistent}" "${CLAIM:-/nonexistent}"; }
+trap cleanup EXIT; trap 'on_signal 130' INT; trap 'on_signal 143' TERM; trap 'on_signal 129' HUP
+
+# Runs on the Mac: its slot count, working slot holders, live waiters. xq's own files, so no change on the Mac.
+read -r -d '' PROBE <<'EOF'
+n=$(sed -nE 's/.*SLOTS=\$\{[A-Z_]+:-([0-9]+)\}.*/\1/p' ~/bin/xq | head -1)
+t=$(date +%s); b=0
+for f in /tmp/xq/slots/*/info; do
+  [ -e "$f" ] || continue; read -r p st _ < "$f"; kill -0 "$p" 2>/dev/null || continue
+  c=${f%/info}/checkin; [ -e "$c" ] || c=${f%/info}
+  # Hung or over time: only a waiter on the Mac can free it, so report it free and let a job go there.
+  [ $((t - $(stat -f %m "$c"))) -gt 600 ] || [ $((t - ${st:-$t})) -gt 5400 ] || b=$((b+1))
+done
+w=0; for f in /tmp/xq/queue/*; do [ -e "$f" ] || continue; read -r p _ < "$f"; kill -0 "$p" 2>/dev/null && w=$((w+1)); done
+echo "XQ ${n:-1} $b $w"
+EOF
+
+# Jobs sent here that haven't shown up in a Mac's slots yet. They count as busy, so two jobs can't both
+# take the same last slot. Each ends when its job gets the slot, or after CLAIM_TTL. Named <mac>.<session>.<pid>;
+# a session's own claim ($2) doesn't count against it, so a pick doesn't push its own job off the Mac it chose.
+claims_of() {
+  local f n=0 t; t=$(date +%s)
+  for f in "$D/claims/$1".*; do
+    [ -e "$f" ] || continue
+    if [ $((t - $(stat -c %Y "$f"))) -gt "$CLAIM_TTL" ]; then rm -f "$f"
+    elif [[ $f != "$D/claims/$1.${2:-}."* ]]; then n=$((n+1)); fi
+  done
+  echo "$n"
+}
+
+# One line per reachable Mac, in list order: <mac> <free> <slots> <busy> <waiting>
+probe_all() {
+  local m t tag n b w; t=$(mktemp -d "$D/probe.XXXXXX")
+  for m in $(macs); do
+    ( timeout 10 "$SSH" "${SSHO[@]}" "$m" bash -s <<<"$PROBE" > "$t/$m" 2>/dev/null ) &
+  done
+  wait
+  for m in $(macs); do
+    [[ $SKIP == *" $m "* ]] && continue
+    read -r tag n b w 2>/dev/null < "$t/$m"
+    [ "${tag:-}" = XQ ] && echo "$m $((n - b - w - $(claims_of "$m" "${1:-}"))) $n $b $w"
+    tag=""
+  done
+  rm -rf "$t"
+}
+
+# Prints the Mac to use: $1 if it has a free slot, else the first free one in the list. $2 is the session.
+# rc 1: all full; rc 2: none reachable.
+best() {
+  local pref=${1:-} rows m f rest top=""
+  rows=$(probe_all "${2:-}"); [ -n "$rows" ] || return 2
+  while read -r m f rest; do
+    [ "$f" -gt 0 ] || continue
+    [ "$m" = "$pref" ] && { echo "$m"; return 0; }
+    [ -n "$top" ] || top=$m
+  done <<<"$rows"
+  [ -n "$top" ] && { echo "$top"; return 0; }
+  return 1
+}
+
+# True if pid is still the process that wrote the ticket ($2 = its start time) and isn't stopped.
+ticket_live() {
+  local line; line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+  # shellcheck disable=SC2086
+  set -- "$2" ${line##*) }
+  [ "$2" != T ] && [ "${21}" = "$1" ]
+}
+my_start() { local line; line=$(cat "/proc/$$/stat"); line=${line##*) }; # shellcheck disable=SC2086
+  set -- $line; echo "${20}"; }
+
+# Waits in line (strict arrival order) until a Mac has a free slot, then claims it. Sets MAC and CLAIM.
+take_turn() {
+  local s=$1 t pid st ahead rc down_since="" last=0 now
+  t="$D/.ticket.$$"; echo "$$ $s $(my_start)" > "$t"
+  TICKET="$D/queue/$(date +%s%N)-$$"; mv "$t" "$TICKET"
+  while :; do
+    ahead=0
+    for t in "$D"/queue/*; do         # glob is sorted = oldest ticket first
+      [ "$t" = "$TICKET" ] && break
+      read -r pid _ st 2>/dev/null < "$t" || continue
+      if ticket_live "$pid" "$st"; then ahead=$((ahead+1))
+      elif ! kill -0 "$pid" 2>/dev/null; then rm -f "$t"; fi
+    done
+    if [ "$ahead" -eq 0 ]; then
+      exec 8>"$D/.lock"; flock 8
+      MAC=$(best "$(pin_get "$s")" "$s"); rc=$?
+      if [ "$rc" -eq 0 ]; then CLAIM="$D/claims/$MAC.$s.$$"; : > "$CLAIM"; fi
+      exec 8>&-
+      [ "$rc" -eq 0 ] && break
+      now=$(date +%s)
+      if [ "$rc" -eq 2 ]; then
+        down_since=${down_since:-$now}
+        [ $((now - down_since)) -ge "$DOWN_LIMIT" ] && die "no build Mac is reachable"
+      else down_since=""; fi
+    fi
+    now=$(date +%s)
+    if [ $((now - last)) -ge 30 ]; then note "[$s] every Mac is full, waiting ($ahead ahead here)"; last=$now; fi
+    sleep "$POLL"
+  done
+  rm -f "$TICKET"; TICKET=""
+}
+
+# Sets MAC when the job can only run on one Mac; leaves it empty when any free Mac will do. Session names and
+# ci refs are dropped first: a branch called fix/testflight-banner says nothing about where the job runs.
+route() {
+  local pin text; pin=$(pin_get "$1"); MAC=""; SIGNING=""
+  text=$(sed -E 's#(~/bin/)?xq (sim )?[A-Za-z0-9_-]+( --)?##g; s#(~/bin/)?ci run [^ ]+ [^ ]+ --##g' <<<"$2")
+  shopt -s nocasematch
+  if [ -n "${XQ_HOST:-}" ]; then MAC=$XQ_HOST
+  elif [[ $text =~ $SIGN_RE ]]; then MAC=$SIGN_MAC; SIGNING=1
+  elif [[ $text =~ $BOUND_RE ]]; then MAC=${pin:-$SIGN_MAC}
+  fi
+  shopt -u nocasematch
+}
+
+# Passes the Mac's stderr through. The job holding a slot ends its claims, including one left by xq pick.
+watch_stderr() {
+  local l
+  while IFS= read -r l || [ -n "$l" ]; do
+    printf '%s\n' "$l" >&2
+    [[ $l == *"got slot"* ]] && rm -f "$CLAIM" "$D/claims/$MAC.$1."*
+  done
+}
+
+on_signal() {
+  [ -n "${JOB:-}" ] && { pkill -TERM -P "$JOB" 2>/dev/null; kill -TERM "$JOB" 2>/dev/null; }
+  exit "$1"
+}
+
+dispatch() {
+  local s=$1 str=$2 pre rc v old tries=0 free
+  old=$(pin_get "$s")
+  pre='export PATH="$HOME/bin:/opt/homebrew/bin:$PATH"; '
+  for v in XQ_MAX_RUN XQ_KICKER; do [ -n "${!v:-}" ] && pre+="export $v=$(printf %q "${!v}"); "; done
+  route "$s" "$str"
+  free=$MAC
+  while :; do
+    MAC=$free
+    if [ -n "$MAC" ]; then note "[$s] going to $MAC's queue"; else take_turn "$s"; note "[$s] going to $MAC"; fi
+    [ -n "$SIGNING" ] || pin_set "$s" "$MAC"
+    { "$SSH" "${SSHO[@]}" "$MAC" "$pre$str" 2>&1 >&3 <&4 | watch_stderr "$s"; exit "${PIPESTATUS[0]}"; } 3>&1 4<&0 &
+    JOB=$!; wait "$JOB"; rc=$?; JOB=""
+    # 255 with the claim still here: the Mac dropped before the job got a slot, so another Mac can take it.
+    [ "$rc" -eq 255 ] && [ -z "$free" ] && [ -n "$CLAIM" ] && [ -e "$CLAIM" ] && [ "$tries" -lt 2 ] || break
+    tries=$((tries+1)); SKIP+="$MAC "; note "[$s] lost $MAC before the job started, trying again"
+    rm -f "$CLAIM"; CLAIM=""
+    if [ -n "$old" ]; then pin_set "$s" "$old"; else rm -f "$D/pins/$s"; fi
+    sleep "$POLL"
+  done
+  cleanup; CLAIM=""
+  exit "$rc"
+}
+
+# Quotes a command for the Mac's shell. A leading ~/ or this box's home stays a path on the Mac.
+quote() {
+  local a out=""
+  for a in "$@"; do
+    case "$a" in
+      "$HOME"/*) out+=" ~/$(printf %q "${a#"$HOME"/}")" ;;
+      '~/'*)     out+=" ~/$(printf %q "${a#'~/'}")" ;;
+      =*)        out+=" \\$(printf %q "$a")" ;;   # zsh would expand a leading =
+      *)         out+=" $(printf %q "$a")" ;;
+    esac
+  done
+  echo "${out# }"
+}
+
+cmd_pick() {
+  local s=$1
+  route "$s" ""
+  [ -n "$MAC" ] || take_turn "$s"
+  pin_set "$s" "$MAC"
+  CLAIM=""                      # outlives this process on purpose: the caller's job hasn't reached the Mac yet
+  echo "$MAC"
+}
+
+# The session's Mac, or a free one if it has none yet (or its Mac is down).
+session_mac() {
+  local s=$1 pin m; pin=$(pin_get "$s")
+  route "$s" ""
+  if [ -n "$MAC" ]; then m=$MAC
+  elif [ -n "$pin" ] && timeout 10 "$SSH" "${SSHO[@]}" "$pin" true </dev/null 2>/dev/null; then m=$pin
+  else m=$(best "" "$s") || m=${pin:-$SIGN_MAC}; fi
+  pin_set "$s" "$m"; echo "$m"
+}
+
+cmd_sim() { local m; m=$(session_mac "$1"); "$SSH" "${SSHO[@]}" "$m" "~/bin/xq sim $1"; }
+
+cmd_status() {
+  local m t
+  for m in $(macs); do
+    echo "== $m"
+    timeout 20 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq status' </dev/null 2>/dev/null | sed '/^sims:/,$d' | grep . || echo "  unreachable"
+  done
+  echo "== waiting here for a free Mac"
+  for t in "$D"/queue/*; do [ -e "$t" ] && cut -d' ' -f2 "$t" | sed 's/^/  /'; done
+  return 0
+}
+
+# checkin / kick: the session's Mac first, then the others.
+cmd_holder() {
+  local verb=$1 s=$2 m pre=""
+  [ -n "${XQ_KICKER:-}" ] && pre="XQ_KICKER=$(printf %q "$XQ_KICKER") "
+  for m in $(pin_get "$s") $(macs); do
+    timeout 30 "$SSH" "${SSHO[@]}" "$m" "$pre~/bin/xq $verb $s" </dev/null 2>/dev/null && return 0
+  done
+  die "no Mac has a job for session '$s'"
+}
+
+case "${1:-}" in
+  ""|-h|--help|help) sed -n '3,24p' "$0" ;;
+  status) cmd_status ;;
+  gc) for m in $(macs); do timeout 60 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq gc' </dev/null; done ;;
+  pick) [ $# -eq 2 ] || die "usage: xq pick <session>"; check_name "$2"; cmd_pick "$2" ;;
+  host) [ $# -eq 2 ] || die "usage: xq host <session>"; check_name "$2"; p=$(pin_get "$2"); echo "${p:-$SIGN_MAC}" ;;
+  sim) [ $# -eq 2 ] || die "usage: xq sim <session>"; check_name "$2"; cmd_sim "$2" ;;
+  checkin|kick) [ $# -eq 2 ] || die "usage: xq $1 <session>"; check_name "$2"; cmd_holder "$1" "$2" ;;
+  ssh) [ $# -eq 3 ] || die "usage: xq ssh <session> '<string>'"; check_name "$2"; p=$(pin_get "$2")
+       exec "$SSH" -o BatchMode=yes -o ConnectTimeout=8 "${p:-$SIGN_MAC}" "$3" ;;
+  cp) [ $# -ge 4 ] || die "usage: xq cp <session> <src...> <dst>"; check_name "$2"; p=$(session_mac "$2")
+      shift 2; args=(); for a in "$@"; do args+=("${a/#mac:/$p:}"); done
+      exec "$SCP" -q -o BatchMode=yes "${args[@]}" ;;
+  run) [ $# -eq 3 ] || die "usage: xq run <session> '<string>'"; check_name "$2"; str=$3
+       case "$str" in *"xq $2 --"*) ;; *) str="~/bin/xq $2 -- bash -c $(printf %q "$str")" ;; esac
+       dispatch "$2" "$str" ;;
+  *) [ "${2:-}" = "--" ] && [ $# -ge 3 ] || die "usage: xq <session> -- <command...>  (see xq --help)"
+     check_name "$1"; s=$1; shift 2; dispatch "$s" "~/bin/xq $s -- $(quote "$@")" ;;
+esac
