@@ -13,7 +13,7 @@
 - `xcodebuild test` on a simulator that isn't booted yet failed to launch 2 times in 5 ("The request was denied by service delegate"). Gates get a booted simulator from `xq sim`, so they should see this less, and `xq test` retries it once.
 
 ## Not done
-- Gate scripts in `post-3.0/batch/gates/*` still run `xcodebuild test` themselves. They belong to lanes other threads were using, so I left them. Moving a gate's full-suite step to `xq test fulltest <sha> --bundle <file>` is the next step, and it prints the lines those scripts grep for.
+- The lanes in `post-3.0/batch/gates/{cb1,cbtwo,iw,cs1,bw,sg}` now use `xq test` for a full-suite gate, through `gates/fulltest.sh`. The newer per-feature scripts (`coreloop`, `followups`, `statsstyle`) still run `xcodebuild test` themselves. A lane copied from them can add the same two lines.
 - `MenosUITests` isn't sharded. It needs the stub API and a device-specific simulator.
 - Only tried with the mini building. The MacBook building and the mini running the second half should work the same way, with the pins following the build Mac.
 

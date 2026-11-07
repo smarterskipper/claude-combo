@@ -70,3 +70,7 @@
 ## 2026-11-07 — Full test runs across both Macs
 - `xq test <session> <ref>`: build once, split MenosTests across the mini and MacBook, one pass/fail. 115 s to 65 s at 3853 tests. `xq free` lists each Mac's free slots.
 - Follow-up needed: gates still run `xcodebuild test` themselves; move their full-suite step when their lanes are quiet (HANDOFF-2026-11-07-sharded-tests.md)
+
+## 2026-11-07 — Gates use xq test
+- Runs in one xq test session now go one at a time, so every gate can share `fulltest`. The six lanes in post-3.0/batch/gates send full-suite gates through it (gates/fulltest.sh).
+- Follow-up needed: coreloop, followups and statsstyle scripts still run xcodebuild test themselves
