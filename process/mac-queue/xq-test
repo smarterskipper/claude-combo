@@ -17,6 +17,7 @@ shard. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" an
 """
 import argparse
 import collections
+import fcntl
 import os
 import re
 import shutil
@@ -206,6 +207,15 @@ def main():
     a = ap.parse_args()
     if not re.fullmatch(r"[A-Za-z0-9_-]+", a.session):
         sys.exit("xq test: session name must match [A-Za-z0-9_-]+")
+
+    # One run per session at a time: the session's simulators can't serve two.
+    os.makedirs(CACHE, exist_ok=True)
+    lock = open(os.path.join(CACHE, f"test-{a.session}.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        print(f"xq test: another {a.session} run is going, waiting for it", flush=True)
+        fcntl.flock(lock, fcntl.LOCK_EX)
 
     t0 = time.time()
     run_id = f"{a.session}-{int(t0)}"

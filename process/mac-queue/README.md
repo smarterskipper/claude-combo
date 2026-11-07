@@ -35,6 +35,8 @@ Use the session name `fulltest` unless two runs need to go at once: the simulato
 
 This builds once in the first free Mac's warm lane, copies the app (about 250 MB, through ubuntu-pc) to the other Mac if it has a free slot, and runs `test-without-building` on two simulators per idle Mac. A Mac with another job running gets one simulator, and if the other Mac is full or down everything stays on the building Mac. The result is one pass or fail, with the usual `Executed N tests` and `** TEST SUCCEEDED **` lines and exit code 0 or 1. Logs stay in `~/.cache/xq/test-runs/<id>/`. Run `xq test -h` for the options. Only test runs go through it: signing, archives and TestFlight stay on the MacBook.
 
+Runs in one session go one at a time, so gates can all share `fulltest`. The lanes in `post-3.0/batch/gates/{cb1,cbtwo,iw,cs1,bw,sg}` send a full-suite gate here through `gates/fulltest.sh`: `gaterun.sh <sha> <tag> tests` or `all` with no test classes. Named classes, `build` and `ui` runs stay on one Mac as before.
+
 How the split stays safe:
 
 - Times come from the last green run, in `~/.cache/xq/timings/`. With no times yet, the whole suite runs as one shard and saves them.
