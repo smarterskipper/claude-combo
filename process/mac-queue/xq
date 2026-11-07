@@ -18,8 +18,7 @@
 #   signing, upload or physical-device job  the MacBook (signing only lives there; a job that hides this inside
 #                                           a script needs XQ_HOST=macbook)
 #   names a simulator UDID or a /tmp/ path  the session's Mac, because that state lives there
-#   anything else                           the session's Mac if free, otherwise the Mac with the most free
-#                                           slots (first in the list on a tie)
+#   anything else                           the session's Mac if free, otherwise the first free Mac in the list
 # The first three go straight to that Mac's own queue. A Mac that is down is skipped. Exit code 255 after a job
 # started means the connection dropped and the job's state is unknown: check `xq status` before retrying.
 # Macs: ~/.config/xq/macs, one ssh alias per line, preferred first. No file means macbook only.
@@ -90,15 +89,15 @@ probe_all() {
   rm -rf "$t"
 }
 
-# Prints the Mac to use: $1 if it has a free slot, else the most free. $2 is the session.
+# Prints the Mac to use: $1 if it has a free slot, else the first free one in the list. $2 is the session.
 # rc 1: all full; rc 2: none reachable.
 best() {
-  local pref=${1:-} rows m f rest top="" topf=0
+  local pref=${1:-} rows m f rest top=""
   rows=$(probe_all "${2:-}"); [ -n "$rows" ] || return 2
   while read -r m f rest; do
     [ "$f" -gt 0 ] || continue
     [ "$m" = "$pref" ] && { echo "$m"; return 0; }
-    [ "$f" -gt "$topf" ] && { top=$m; topf=$f; }
+    [ -n "$top" ] || top=$m
   done <<<"$rows"
   [ -n "$top" ] && { echo "$top"; return 0; }
   return 1
@@ -254,7 +253,7 @@ cmd_holder() {
 }
 
 case "${1:-}" in
-  ""|-h|--help|help) sed -n '3,25p' "$0" ;;
+  ""|-h|--help|help) sed -n '3,24p' "$0" ;;
   status) cmd_status ;;
   gc) for m in $(macs); do timeout 60 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq gc' </dev/null; done ;;
   pick) [ $# -eq 2 ] || die "usage: xq pick <session>"; check_name "$2"; cmd_pick "$2" ;;

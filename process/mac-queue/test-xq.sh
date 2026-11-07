@@ -36,10 +36,10 @@ full() { echo "$(cat "$STUB/$1/slots")" > "$STUB/$1/busy"; }
 ran_on() { grep -c "^$1 " "$STUB/log"; }
 
 reset; "$XQ" a -- echo hi 2>/dev/null
-[ "$(ran_on macbook)" = 1 ] && ok "most free slots wins" || no "most free slots wins"
+[ "$(ran_on mini)" = 1 ] && ok "first free Mac in the list wins" || no "first free Mac in the list wins"
 
-reset; echo 1 > "$STUB/macbook/busy"; "$XQ" a -- echo hi 2>/dev/null
-[ "$(ran_on mini)" = 1 ] && ok "tie goes to the first Mac in the list" || no "tie goes to the first Mac in the list"
+reset; full mini; "$XQ" a -- echo hi 2>/dev/null
+[ "$(ran_on macbook)" = 1 ] && ok "overflow goes to the next Mac" || no "overflow goes to the next Mac"
 
 reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on mini)" = 1 ] && ok "free pinned Mac is kept" || no "free pinned Mac is kept"
@@ -69,7 +69,7 @@ reset; touch "$STUB/mini/down"; "$XQ" a -- echo hi 2>/dev/null
 reset; touch "$STUB/mini/down" "$STUB/macbook/down"; "$XQ" a -- echo hi 2>/dev/null; rc=$?
 [ "$rc" != 0 ] && ok "every Mac down fails instead of hanging" || no "every Mac down fails instead of hanging"
 
-reset; echo 7 > "$STUB/macbook/rc"; "$XQ" a -- false 2>/dev/null; rc=$?
+reset; echo 7 > "$STUB/mini/rc"; "$XQ" a -- false 2>/dev/null; rc=$?
 [ "$rc" = 7 ] && ok "the job's exit code comes back" || no "the job's exit code comes back ($rc)"
 
 reset; full mini; full macbook
@@ -93,7 +93,7 @@ m1=$("$XQ" pick a 2>/dev/null); m2=$("$XQ" pick b 2>/dev/null)
 [ "$m1" != "$m2" ] && ok "a fresh pick counts as busy for the next pick" || no "a fresh pick counts as busy for the next pick ($m1 $m2)"
 
 reset; "$XQ" pick a >/dev/null 2>&1; "$XQ" cp a x.sh mac:/tmp/x.sh 2>/dev/null
-grep -q "macbook:/tmp/x.sh" "$STUB/log" && ok "cp swaps mac: for the session's Mac" || no "cp swaps mac: for the session's Mac"
+grep -q "mini:/tmp/x.sh" "$STUB/log" && ok "cp swaps mac: for the session's Mac" || no "cp swaps mac: for the session's Mac"
 
 reset; "$XQ" a -- echo hi 2>/dev/null; ls "$T/state/claims" 2>/dev/null | grep -q . && no "claim left behind after the job" || ok "claim is gone after the job"
 
@@ -119,10 +119,10 @@ reset; echo 255 > "$STUB/mini/rc"; touch "$STUB/mini/nostart"; echo 1 > "$STUB/m
 "$XQ" a -- echo hi 2>/dev/null; rc=$?
 [ "$rc" = 0 ] && [ "$(ran_on macbook)" = 1 ] && [ "$("$XQ" host a)" = macbook ] && ok "a Mac lost before the job starts: next Mac takes it" || no "a Mac lost before the job starts: next Mac takes it (rc $rc)"
 
-reset; touch "$STUB/macbook/slow"; "$XQ" a -- echo hi >/dev/null 2>&1 & p=$!; sleep 0.6; kill -TERM "$p"; S=$SECONDS; wait "$p"; rc=$?
+reset; touch "$STUB/mini/slow"; "$XQ" a -- echo hi >/dev/null 2>&1 & p=$!; sleep 0.6; kill -TERM "$p"; S=$SECONDS; wait "$p"; rc=$?
 [ "$rc" = 143 ] && [ $((SECONDS-S)) -le 1 ] && ok "TERM stops xq right away" || no "TERM stops xq right away (rc $rc)"
 
-reset; echo x > "$STUB/macbook/tail"; e=$("$XQ" a -- echo hi 2>&1 >/dev/null)
+reset; echo x > "$STUB/mini/tail"; e=$("$XQ" a -- echo hi 2>&1 >/dev/null)
 [[ $e == *"FATAL no newline"* ]] && ok "last stderr line without a newline survives" || no "last stderr line without a newline survives"
 
 reset; "$XQ" run a 'U=$(~/bin/xq sim a); xcodebuild test -destination id=$U' 2>/dev/null

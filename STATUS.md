@@ -57,4 +57,5 @@
 ## 2026-11-06 — Mac queue dispatcher
 - New `process/mac-queue/`: `xq` on ubuntu-pc sends Mac jobs to whichever build Mac is free, `setup-mac.sh` brings a new Mac in line with the MacBook, 33 stub tests
 - Each Mac's own `~/bin/xq` stays as it was; the MacBook's copy is unchanged
-- Follow-up needed: the mini isn't in `~/.config/xq/macs` yet because its test runner hangs; gate scripts still name `macbook`
+- Mini live in `~/.config/xq/macs` (Xcode 27.2; full MenosTests pass), first choice, MacBook takes overflow
+- Follow-up needed: gate and screenshot scripts still name `macbook` until the two Macs share an Xcode version

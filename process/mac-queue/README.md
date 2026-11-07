@@ -18,7 +18,7 @@ How a Mac is chosen:
 | `XQ_HOST=<alias>` set | that Mac |
 | Archive, export, upload, `devicectl`, keychain unlock | MacBook: signing only lives there |
 | Names a simulator UDID or a `/tmp/` path | the session's Mac, because that state lives there |
-| Anything else | the session's Mac if free, otherwise the Mac with the most free slots |
+| Anything else | the session's Mac if free, otherwise the first free Mac in the list |
 
 If every Mac is full, the job waits in one line on ubuntu-pc, in arrival order, and goes to the first Mac that frees up. A Mac that's down is skipped, so losing the mini means everything runs on the MacBook as before.
 
@@ -34,3 +34,7 @@ The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last 
 ## Tests
 
 `bash test-xq.sh` runs against a stub ssh and touches no real Mac.
+
+## Xcode versions
+
+The mini runs Xcode 27.2 (macOS 27.2 wouldn't open 26.4 and its test runner hung), the MacBook 26.4. Builds and tests pass on both, but a job that compiles on one isn't proof for the other. Release builds and screenshot lanes stay on the MacBook.
