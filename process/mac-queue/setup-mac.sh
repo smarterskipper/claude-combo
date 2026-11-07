@@ -102,7 +102,7 @@ import json,sys
 for rt,devs in json.load(sys.stdin)["devices"].items():
     if ".iOS-" in rt:
         for d in devs:
-            if d["name"].startswith("xq-") and d["isAvailable"] and d["state"]=="Shutdown" and "lastBootedAt" not in d:
+            if d["name"].startswith("xq-") and d["isAvailable"] and d["state"]=="Shutdown" and not (d.get("lastUsedAt") or d.get("lastBootedAt")):
                 print(d["udid"])')
 warm() {
   for u; do xcrun simctl boot "$u"; done
