@@ -66,3 +66,7 @@
 - `setup-mac.sh warm` gives each xq-* iPhone its first boot ahead of time, because that boot puts a banner over screenshots; done on the mini
 - `xq --help` prints the whole header again; MacBook's `~/bin/xq` got the linger fix (Boston's yes), a tiny job went from 60.2 s to 0.5 s
 - Follow-up needed: `mac-offload` and `mac-sim-cleanup` still only cover the MacBook. The cleanup deletes idle `xq-*-se` and `-promax` sims, and `xq sim` doesn't remake those, so a lane idle for 7+ days can lose them on the MacBook
+
+## 2026-11-07 — Full test runs across both Macs
+- `xq test <session> <ref>`: build once, split MenosTests across the mini and MacBook, one pass/fail. 115 s to 65 s at 3853 tests. `xq free` lists each Mac's free slots.
+- Follow-up needed: gates still run `xcodebuild test` themselves; move their full-suite step when their lanes are quiet (HANDOFF-2026-11-07-sharded-tests.md)

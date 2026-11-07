@@ -10,6 +10,8 @@
 #   xq ssh <session> '<string>'     quick read-only command on the session's Mac, no queue
 #   xq cp <session> <src...> <dst>  scp; write the session's Mac as mac:, e.g. mac:/tmp/x.log
 #   xq sim <session>                UDID of the session's simulator on its Mac (no Mac yet: picks a free one)
+#   xq test <session> <ref>         one full test run split across the Macs, one pass/fail (xq test -h)
+#   xq free                         one line per reachable Mac: <mac> <free> <slots> <busy> <waiting>
 #   xq status                       every Mac's slots and queue, and who is waiting here
 #   xq checkin|kick <session>       passed to the Mac holding that session's job
 #   xq gc                           passed to every Mac
@@ -255,6 +257,8 @@ cmd_holder() {
 case "${1:-}" in
   ""|-h|--help|help) sed -n '3,/^[^#]/p' "$0" | sed '$d' ;;
   status) cmd_status ;;
+  free) probe_all ;;
+  test) shift; exec python3 "$(dirname "$(readlink -f "$0")")/xq-test" "$@" ;;
   gc) for m in $(macs); do timeout 60 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq gc' </dev/null; done ;;
   pick) [ $# -eq 2 ] || die "usage: xq pick <session>"; check_name "$2"; cmd_pick "$2" ;;
   host) [ $# -eq 2 ] || die "usage: xq host <session>"; check_name "$2"; p=$(pin_get "$2"); echo "${p:-$SIGN_MAC}" ;;

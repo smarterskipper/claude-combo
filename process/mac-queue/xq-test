@@ -1,0 +1,345 @@
+#!/usr/bin/env python3
+"""xq test <session> <ref> [options]: one full test run, split across the build Macs, one pass/fail.
+
+Builds once in the first free Mac's warm lane, sends the app to the other Mac if it has a free slot, and runs
+test-without-building on one or two simulators per Mac. If the other Mac is busy or down, every shard stays on
+the building Mac. Only test runs: signing, archives and TestFlight never come here.
+
+  --repo menos-ios        ci repo
+  --scheme MenosTests     scheme; its folder holds the tests and must have the same name
+  --sims 2                simulators per idle Mac (a Mac with another job running gets 1)
+  --one-mac               don't use a second Mac
+  --bundle <file>         git bundle with the commits (ref must be a SHA), for work not on GitHub yet
+
+The split comes from the last green run's times in ~/.cache/xq/timings. The first shard skips what the others
+run, instead of listing what it runs, so a new test can't be missed. With no times yet the whole suite is one
+shard. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" and "** TEST SUCCEEDED **" lines.
+"""
+import argparse
+import collections
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+HERE = os.path.dirname(os.path.realpath(__file__))
+XQ = os.path.join(HERE, "xq")
+WORKER = os.path.join(HERE, "xq-test-worker.sh")
+CACHE = os.environ.get("XQ_STATE", os.path.expanduser("~/.cache/xq"))
+SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
+SCP = ["scp", "-q", "-o", "BatchMode=yes"]
+B_START_DELAY = 10   # seconds the second Mac starts behind: its job, the copy and a simulator boot
+SPLIT_AT = 0.5       # a class over this share of one shard's time is split by method
+KEEP_RUNS = 20
+
+
+def plan(timings, pins, n_a, n_b, target, b_delay=0):
+    """Splits tests into shards. Shard 0 runs on the build Mac ("a") and skips what every other shard runs."""
+    if not timings or n_a + n_b < 2:
+        return [{"mac": "a", "args": []}]
+    by_class = collections.defaultdict(dict)
+    for (cls, method), secs in timings.items():
+        by_class[cls][method] = secs
+    per_shard = sum(timings.values()) / (n_a + n_b)
+    items = []
+    for cls, methods in by_class.items():
+        if sum(methods.values()) > per_shard * SPLIT_AT:
+            items += [(secs, f"{cls}/{m}", cls) for m, secs in methods.items()]
+        else:
+            items.append((sum(methods.values()), cls, cls))
+    bins = [{"mac": "a", "load": 0.0, "ids": []} for _ in range(n_a)]
+    bins += [{"mac": "b", "load": float(b_delay), "ids": []} for _ in range(n_b)]
+    for secs, ident, cls in sorted(items, reverse=True):
+        fits = [b for b in bins if cls not in pins or b["mac"] == "a"]
+        best = min(fits, key=lambda b: b["load"])
+        best["load"] += secs
+        best["ids"].append(ident)
+    others = [b for b in bins[1:] if b["ids"]]
+    skip = [f"-skip-testing:{target}/{i}" for b in others for i in sorted(b["ids"])]
+    return [{"mac": "a", "args": skip}] + [
+        {"mac": b["mac"], "args": [f"-only-testing:{target}/{i}" for i in sorted(b["ids"])]} for b in others]
+
+
+def shard_seconds(shards, timings, target):
+    """Estimated seconds per shard, in shard order."""
+    def secs(ident):
+        parts = ident.split("/")
+        if len(parts) == 2:
+            return sum(s for (c, _), s in timings.items() if c == parts[1])
+        return timings.get((parts[1], parts[2]), 0)
+    listed = [sum(secs(a.split(":", 1)[1]) for a in s["args"]) for s in shards[1:]]
+    return [sum(timings.values()) - sum(listed)] + listed
+
+
+SERIAL = re.compile(r"Test Case '-\[(?:\w+\.)?(\w+) (\w+)\]' (passed|failed|skipped) \((\d+\.\d+) seconds\)")
+PARALLEL = re.compile(r"Test case '(\w+)\.(\w+)(?:\(\))?' (passed|failed|skipped) on .*\((\d+\.\d+) seconds\)")
+
+
+def parse_log(text):
+    """{(class, method): (result, seconds)} from an xcodebuild log."""
+    found = {}
+    for line in text.splitlines():
+        m = SERIAL.search(line) or PARALLEL.search(line)
+        if m:
+            found[(m[1], m[2])] = (m[3], float(m[4]))
+    return found
+
+
+def merge(shards, last_total):
+    """One verdict from every shard's {name, rc, results}. last_total: test count of the last green run."""
+    seen, twice, failed, problems = {}, [], [], []
+    for s in shards:
+        if s["rc"] != 0:
+            problems.append(f"{s['name']} exited {s['rc']}")
+        if not s["results"]:
+            problems.append(f"{s['name']} ran no tests")
+        for key, (result, _) in s["results"].items():
+            name = ".".join(key)
+            if key in seen:
+                twice.append(name)
+            seen[key] = result
+            if result == "failed":
+                failed.append(name)
+    if twice:
+        problems.append(f"{len(twice)} tests ran twice")
+    if len(seen) < last_total * 0.95:
+        problems.append(f"only {len(seen)} tests ran, the last green run had {last_total}")
+    skipped = sum(1 for r in seen.values() if r == "skipped")
+    return {"ok": not failed and not problems, "total": len(seen), "skipped": skipped,
+            "failed": sorted(failed), "twice": sorted(twice), "problems": problems}
+
+
+def load_timings(path):
+    t = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                cls, method, secs = line.rstrip("\n").split("\t")
+                t[(cls, method)] = float(secs)
+    except FileNotFoundError:
+        pass
+    return t
+
+
+def save_timings(path, results):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".new", "w") as f:
+        for (cls, method), (_, secs) in sorted(results.items()):
+            f.write(f"{cls}\t{method}\t{secs}\n")
+    os.replace(path + ".new", path)
+
+
+def free_macs():
+    """{mac: (free, slots, busy, waiting)} for reachable Macs, in list order."""
+    out = subprocess.run([XQ, "free"], capture_output=True, text=True).stdout
+    rows = collections.OrderedDict()
+    for line in out.splitlines():
+        p = line.split()
+        if len(p) == 5:
+            rows[p[0]] = tuple(int(x) for x in p[1:])
+    return rows
+
+
+class Job:
+    """An xq job on one Mac. Reads its XQT lines on a thread."""
+
+    def __init__(self, mac, session, cmd):
+        self.mac, self.events, self.shards = mac, [], {}
+        self.built = threading.Event()
+        self.failure = None
+        env = dict(os.environ, XQ_HOST=mac)
+        self.proc = subprocess.Popen([XQ, session, "--"] + cmd, env=env, text=True, errors="replace",
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        self.thread = threading.Thread(target=self.read, daemon=True)
+        self.thread.start()
+
+    def read(self):
+        for line in self.proc.stdout:
+            line = line.rstrip("\n")
+            p = line.split(" ")
+            if p[0] != "XQT":
+                print(f"  [{self.mac}] {line}", flush=True)
+            elif p[1] == "built":
+                self.events.append(p)
+                self.built.set()
+            elif p[1] == "pin":
+                self.events.append(p)
+            elif p[1] == "shard":
+                self.shards[p[2]] = {"rc": int(p[3]), "secs": int(p[4]), "retried": p[5] == "1"}
+                print(f"  [{self.mac}] {p[2]} done in {p[4]} s" + (" (second try)" if p[5] == "1" else ""), flush=True)
+            elif p[1] == "failed":
+                self.failure = " ".join(p[2:])
+        self.proc.wait()
+        self.built.set()
+
+    def wait(self):
+        self.thread.join()
+        return self.proc.returncode
+
+
+def ssh(mac, cmd, **kw):
+    return subprocess.run(SSH + [mac, cmd], **kw)
+
+
+def send_products(src, dst, products, ship, xctestrun, remote):
+    """Mac to Mac through this box. Plain tar: the app is mostly already compressed art."""
+    paths = " ".join(f"'{p}'" for p in ship + [xctestrun])
+    cmd = (f"ssh -o BatchMode=yes {src} \"COPYFILE_DISABLE=1 tar -C '{products}' -cf - {paths}\" | "
+           f"ssh -o BatchMode=yes {dst} \"mkdir -p {remote}/products && tar -C {remote}/products -xf - && "
+           f"touch {remote}/products/ready\"")
+    return subprocess.run(["bash", "-o", "pipefail", "-c", cmd]).returncode
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="xq test", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
+    ap.add_argument("session")
+    ap.add_argument("ref")
+    ap.add_argument("--repo", default="menos-ios")
+    ap.add_argument("--scheme", default="MenosTests")
+    ap.add_argument("--sims", type=int, default=2)
+    ap.add_argument("--one-mac", action="store_true")
+    ap.add_argument("--bundle")
+    a = ap.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", a.session):
+        sys.exit("xq test: session name must match [A-Za-z0-9_-]+")
+
+    t0 = time.time()
+    run_id = f"{a.session}-{int(t0)}"
+    remote = f"/tmp/xqt/{run_id}"
+    run_dir = os.path.join(CACHE, "test-runs", run_id)
+    os.makedirs(run_dir)
+    timing_file = os.path.join(CACHE, "timings", f"{a.repo}.{a.scheme}.tsv")
+    timings = load_timings(timing_file)
+
+    picked = subprocess.run([XQ, "pick", a.session], capture_output=True, text=True)
+    mac = picked.stdout.strip()
+    if picked.returncode or not mac:
+        sys.exit(f"xq test: no build Mac: {picked.stderr.strip()}")
+    # Another job on this Mac means one simulator, so it keeps its share of the machine.
+    rows = free_macs()
+    sims_a = a.sims if rows.get(mac, (0, 0, 0, 0))[2] == 0 else 1
+    used, jobs = [mac], []
+
+    def clean(*_):
+        for j in jobs:
+            if j.proc.poll() is None:
+                j.proc.terminate()
+        for m in used:
+            ssh(m, f"rm -rf {remote}", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def on_signal(n, _):
+        clean()
+        sys.exit(128 + n)
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+
+    try:
+        ssh(mac, f"mkdir -p {remote}", check=True)
+        worker = f"{remote}/worker.sh"
+        subprocess.run(SCP + [WORKER, f"{mac}:{worker}"], check=True)
+        bundle = []
+        if a.bundle:
+            subprocess.run(SCP + [a.bundle, f"{mac}:{remote}/in.bundle"], check=True)
+            bundle = [f"{remote}/in.bundle"]
+        print(f"xq test: building {a.ref} on {mac}", flush=True)
+        job_a = Job(mac, a.session, ["bash", worker, "build", remote, a.scheme, a.session, str(sims_a),
+                                     a.repo, a.ref] + bundle)
+        jobs.append(job_a)
+        job_a.built.wait()
+        built = next((e for e in job_a.events if e[1] == "built"), None)
+        if not built:
+            job_a.wait()
+            print(f"xq test: {job_a.failure or 'the build job ended early'}")
+            print("** TEST FAILED **")
+            return 1
+        build_secs, products, xctestrun, ship = int(built[2]), built[3], built[4], [p for p in built[5].split(",") if p]
+        t_built = time.time()
+        pins = {e[2] for e in job_a.events if e[1] == "pin"}
+
+        other, sims_b = None, 0
+        if not a.one_mac and timings:
+            for m, (free, _, busy, _) in free_macs().items():
+                if m != mac and free > 0:
+                    other, sims_b = m, (a.sims if busy == 0 else 1)
+                    break
+        shards = plan(timings, pins, sims_a, sims_b, a.scheme, B_START_DELAY if other else 0)
+        counts = collections.Counter()
+        for s in shards:
+            counts[s["mac"]] += 1
+            s["name"] = f"{s['mac']}{counts[s['mac']]}"
+            with open(os.path.join(run_dir, s["name"] + ".args"), "w") as f:
+                f.write("".join(x + "\n" for x in s["args"]))
+        est = shard_seconds(shards, timings, a.scheme)
+        print(f"xq test: built in {build_secs} s; shards " +
+              ", ".join(f"{s['name']} ~{e:.0f} s" for s, e in zip(shards, est)) +
+              (f" (b = {other})" if counts["b"] else " (one Mac)"), flush=True)
+
+        def args_of(prefix):
+            return [os.path.join(run_dir, s["name"] + ".args") for s in shards if s["mac"] == prefix]
+
+        send_rc = [0]
+        sender = None
+        if counts["b"]:
+            used.append(other)
+            ssh(other, f"mkdir -p {remote}", check=True)
+            subprocess.run(SCP + [WORKER] + args_of("b") + [f"{other}:{remote}/"], check=True)
+            ssh(other, f"mv {remote}/{os.path.basename(WORKER)} {worker}", check=True)
+            sender = threading.Thread(target=lambda: send_rc.__setitem__(
+                0, send_products(mac, other, products, ship, xctestrun, remote)))
+            sender.start()
+            jobs.append(Job(other, f"{a.session}-b", ["bash", worker, "run", remote, a.scheme,
+                                                      f"{a.session}-b", str(sims_b)]))
+        subprocess.run(SCP + args_of("a") + [f"{mac}:{remote}/"], check=True)
+        ssh(mac, f"touch {remote}/go", check=True)
+
+        for j in jobs:
+            j.wait()
+        if sender:
+            sender.join()
+        t_done = time.time()
+        for j in jobs:
+            subprocess.run(SCP + [f"{j.mac}:{remote}/*.log", run_dir + "/"], stderr=subprocess.DEVNULL)
+
+        merged = []
+        for s in shards:
+            j = jobs[0] if s["mac"] == "a" else jobs[1]
+            info = j.shards.get(s["name"], {"rc": 1})
+            path = os.path.join(run_dir, s["name"] + ".log")
+            text = open(path, errors="replace").read() if os.path.exists(path) else ""
+            merged.append({"name": s["name"], "rc": info["rc"], "results": parse_log(text)})
+        v = merge(merged, len(timings))
+        if send_rc[0]:
+            v["problems"].append(f"copying the app to {other} failed")
+            v["ok"] = False
+        for j in jobs:
+            if j.failure:
+                v["problems"].append(f"{j.mac}: {j.failure}")
+                v["ok"] = False
+        for name in v["failed"][:40]:
+            print(f"FAILED {name}")
+        for p in v["problems"]:
+            print(f"problem: {p}")
+        print(f"\t Executed {v['total']} tests, with {v['skipped']} tests skipped and {len(v['failed'])} failures")
+        macs = " + ".join(j.mac for j in jobs)
+        print(f"xq test: {'PASSED' if v['ok'] else 'FAILED'} in {time.time() - t0:.0f} s on {macs} "
+              f"(wait + build {t_built - t0:.0f} s, tests {t_done - t_built:.0f} s); logs in {run_dir}")
+        print("** TEST SUCCEEDED **" if v["ok"] else "** TEST FAILED **")
+        if v["ok"]:
+            results = {}
+            for s in merged:
+                results.update(s["results"])
+            save_timings(timing_file, results)
+        return 0 if v["ok"] else 1
+    finally:
+        clean()
+        runs = sorted(os.scandir(os.path.dirname(run_dir)), key=lambda e: e.stat().st_mtime)
+        for e in runs[:-KEEP_RUNS]:
+            shutil.rmtree(e.path, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
