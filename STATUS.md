@@ -59,3 +59,10 @@
 - Each Mac's own `~/bin/xq` stays as it was; the MacBook's copy is unchanged
 - Mini live in `~/.config/xq/macs` (Xcode 27.2; full MenosTests pass), first choice, MacBook takes overflow
 - Follow-up needed: gate and screenshot scripts still name `macbook` until the two Macs share an Xcode version
+
+## 2026-11-06 — Gates run on both Macs
+- Both Macs on Xcode 27.2; full MenosTests pass on each (3812 tests, 0 failures)
+- Gate lanes `post-3.0/batch/gates/{cb1,cbtwo,iw,cs1,bw,sg}` now pick a Mac with `xq pick` and send jobs with `xq run`; gate, UI test, shots, video, watch shots and strings all ran on the mini
+- `setup-mac.sh warm` gives each xq-* iPhone its first boot ahead of time, because that boot puts a banner over screenshots; done on the mini
+- `xq --help` prints the whole header again; MacBook's `~/bin/xq` got the linger fix (Boston's yes), a tiny job went from 60.2 s to 0.5 s
+- Follow-up needed: `mac-offload` and `mac-sim-cleanup` still only cover the MacBook. The cleanup deletes idle `xq-*-se` and `-promax` sims, and `xq sim` doesn't remake those, so a lane idle for 7+ days can lose them on the MacBook

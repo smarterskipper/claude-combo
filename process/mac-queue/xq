@@ -253,7 +253,7 @@ cmd_holder() {
 }
 
 case "${1:-}" in
-  ""|-h|--help|help) sed -n '3,24p' "$0" ;;
+  ""|-h|--help|help) sed -n '3,/^[^#]/p' "$0" | sed '$d' ;;
   status) cmd_status ;;
   gc) for m in $(macs); do timeout 60 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq gc' </dev/null; done ;;
   pick) [ $# -eq 2 ] || die "usage: xq pick <session>"; check_name "$2"; cmd_pick "$2" ;;

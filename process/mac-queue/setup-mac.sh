@@ -8,9 +8,10 @@
 #   brew    installs the build tools the gates use
 #   ci      creates ~/ci/<repo> with remote and keep.list. Add --secrets to also copy secrets/ Mac to Mac
 #   sims    creates every xq-* simulator the MacBook has, same name and device type
+#   warm    boots each xq-* iPhone simulator that has never booted, once, through the Mac's queue
 # A step that needs a person (sudo, GitHub sign-in) says so. Nothing here touches the MacBook except reads.
 set -u -o pipefail
-M=${1:-}; STEP=${2:-}; [ -n "$M" ] && [ -n "$STEP" ] || { sed -n '2,11p' "$0"; exit 1; }
+M=${1:-}; STEP=${2:-}; [ -n "$M" ] && [ -n "$STEP" ] || { sed -n '2,12p' "$0"; exit 1; }
 SRC=${XQ_SRC_MAC:-macbook}
 SLOTS=${XQ_NEW_SLOTS:-1}
 TOOLS="xcodegen gh node"
@@ -37,7 +38,7 @@ R
 step_tools() {
   local t; t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
   scp -q "${SSHO[@]}" "$SRC:bin/xq" "$SRC:bin/ci" "$SRC:ci/README.md" "$t/" || return 1
-  # Slots: the gate scripts set XQ_SLOTS=2 for the MacBook, so this Mac reads its own variable instead.
+  # Slots: older scripts still set XQ_SLOTS=2 for the MacBook, so this Mac reads its own variable instead.
   # Watcher: its `sleep` otherwise keeps the job's stderr open, and ssh stays connected up to 60 s after the job ends.
   sed -E -i "s/SLOTS=\\\$\{XQ_SLOTS:-[0-9]+\}/SLOTS=\${XQ_MAC_SLOTS:-$SLOTS}/; s/^( *)watch_job \\\$\\\$ \"\\\$SLOT\" & WATCH=\\\$!/\1watch_job \$\$ \"\$SLOT\" <\/dev\/null >\/dev\/null 2>\&1 \& WATCH=\$!/" "$t/xq"
   grep -q "XQ_MAC_SLOTS:-$SLOTS" "$t/xq" && grep -q 'watch_job $$ "$SLOT" </dev/null' "$t/xq" || { echo "patching xq failed: the MacBook's copy changed shape"; return 1; }
@@ -92,8 +93,36 @@ for rt,devs in json.load(sys.stdin)["devices"].items():
   echo "$made of $want xq simulators present or created"; [ "$made" = "$want" ]
 }
 
+# A simulator's first boot shows system banners ("Ready for Apple Intelligence") that land on top of screenshots, and
+# they don't come back on later boots. So every xq-* iPhone gets its first boot here, 4 at a time, instead of in a gate.
+step_warm() {
+  on 'cat > /tmp/xq-sim-warm.sh' <<'EOF'
+list=$(xcrun simctl list devices -j | /usr/bin/python3 -c '
+import json,sys
+for rt,devs in json.load(sys.stdin)["devices"].items():
+    if ".iOS-" in rt:
+        for d in devs:
+            if d["name"].startswith("xq-") and d["isAvailable"] and d["state"]=="Shutdown" and not (d.get("lastUsedAt") or d.get("lastBootedAt")):
+                print(d["udid"])')
+warm() {
+  for u; do xcrun simctl boot "$u"; done
+  for u; do xcrun simctl bootstatus "$u" -b >/dev/null; done
+  sleep 60
+  for u; do xcrun simctl shutdown "$u"; done
+  echo "warmed $#"
+}
+set --
+for u in $list; do
+  set -- "$@" "$u"
+  if [ $# -eq 4 ]; then warm "$@"; set --; fi
+done
+[ $# -eq 0 ] || warm "$@"
+EOF
+  on '~/bin/xq sim-warm -- bash /tmp/xq-sim-warm.sh'
+}
+
 case "$STEP" in
-  check|tools|xcode|runtimes|brew|sims) "step_$STEP" ;;
+  check|tools|xcode|runtimes|brew|sims|warm) "step_$STEP" ;;
   ci) step_ci "${3:-}" ;;
-  *) sed -n '2,11p' "$0"; exit 1 ;;
+  *) sed -n '2,12p' "$0"; exit 1 ;;
 esac
