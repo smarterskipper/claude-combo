@@ -74,3 +74,7 @@
 ## 2026-11-07 — Gates use xq test
 - Runs in one xq test session now go one at a time, so every gate can share `fulltest`. The six lanes in post-3.0/batch/gates send full-suite gates through it (gates/fulltest.sh).
 - Follow-up needed: coreloop, followups and statsstyle scripts still run xcodebuild test themselves
+
+## 2026-11-11 — Brain review moved to Proxmox CT 129
+- `process/brain-review/README.md`: what the brain review and code index do, where they run (CT 129 `brain-review` on pve1), schedule, $190/key/calendar-month caps, how to stop it
+- Follow-up needed: none; ubuntu-pc timers stay off
