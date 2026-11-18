@@ -52,8 +52,14 @@ step_tools() {
 # job starting meanwhile reads either the old file or the new one.
 step_xq() {
   local t n; t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
-  n=$(on 'cat ~/bin/xq 2>/dev/null' | sed -nE 's/.*SLOTS=\$\{XQ_(MAC_)?SLOTS:-([0-9]+)\}.*/\2/p' | head -1)
-  n=${n:-$SLOTS}
+  # A failed read must not reset a Mac to XQ_NEW_SLOTS, so only a Mac with no ~/bin/xq gets that.
+  if on '[ -e ~/bin/xq ]'; then
+    n=$(on 'cat ~/bin/xq' | sed -nE 's/.*SLOTS=\$\{XQ_(MAC_)?SLOTS:-([0-9]+)\}.*/\2/p' | head -1)
+    [ -n "$n" ] || { echo "could not read $M's slot count; nothing installed"; return 1; }
+  else
+    on true || { echo "$M is unreachable"; return 1; }
+    n=$SLOTS
+  fi
   sed -E "s/SLOTS=\\\$\{XQ_MAC_SLOTS:-[0-9]+\}/SLOTS=\${XQ_MAC_SLOTS:-$n}/" "$HERE/mac-xq" > "$t/xq"
   grep -q "SLOTS=\${XQ_MAC_SLOTS:-$n}" "$t/xq" || { echo "setting the slot count failed: mac-xq changed shape"; return 1; }
   sed -i "/^set -u$/i # This Mac's copy, from claude-combo process/mac-queue/mac-xq on $(date +%F): $n slot(s)." "$t/xq"

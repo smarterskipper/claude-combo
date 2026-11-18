@@ -10,7 +10,10 @@ cat > "$T/bin/xcrun" <<'S'
 #!/bin/bash
 [ "$1" = simctl ] || exit 1
 case $2 in
-  list) cat "$STUB/devices.json" ;;
+  list) if [ "${4:-}" = -j ]; then cat "$STUB/devices.json"
+        else python3 -c 'import json,sys
+for v in json.load(open(sys.argv[1]))["devices"].values():
+    for d in v: print("    %s (%s) (%s)" % (d["name"], d["udid"], d["state"]))' "$STUB/devices.json"; fi ;;
   delete|shutdown) echo "$2 $3" >> "$STUB/log" ;;
   *) exit 1 ;;
 esac
@@ -89,6 +92,17 @@ check "dry run sums the size" 'grep -q "would delete 5 simulator(s) unused for 2
 reset; "$XQ" prune > "$T/out" 2>&1
 check "prune deletes exactly the dry run's list" '[ "$(deleted)" = 5 ] && for n in $EXPECT; do was_deleted $n || exit 1; done'
 check "prune never touches a booted simulator" '! grep -q "^shutdown" "$T/log"'
+# The list said Shutdown, but it was booted by the time of the delete.
+reset; cat > "$T/bin/python3" <<'S'
+#!/bin/bash
+/usr/bin/python3 "$@"; rc=$?
+sed -i 's/"name": "xq-oldtag", \("udid": "[^"]*", "deviceTypeIdentifier": "[^"]*", "state": "\)Shutdown/"name": "xq-oldtag", \1Booted/' "$STUB/devices.json"
+exit $rc
+S
+chmod +x "$T/bin/python3"; XQ_PY=$T/bin/python3 "$XQ" prune > "$T/out" 2>&1; rm -f "$T/bin/python3"
+check "prune skips a simulator booted after the list was made" '! was_deleted xq-oldtag && was_deleted xq-ru7gate-1'
+
+reset; "$XQ" prune > "$T/out" 2>&1
 check "prune leaves no lock behind" '[ ! -e "$XQ_DIR/.prune" ]'
 
 reset; mkdir -p "$XQ_DIR/seen"; touch "$XQ_DIR/seen/oldtag"; "$XQ" prune --dry-run > "$T/out" 2>&1
@@ -120,8 +134,8 @@ check "drop skips a session that still holds a slot" '[ "$(deleted)" = 0 ]'
 reset; echo 12 > "$T/free"; job s -- true > "$T/out" 2>&1
 check "low disk: a job warns and prunes before it runs" 'grep -q "WARNING only 12 GB free" "$T/out" && [ "$(deleted)" -ge 1 ]'
 check "low disk: prune keeps what was used in the last 3 h" '! was_deleted xq-recent-1'
-reset; echo 12 > "$T/free"; XQ_LOW_AGE=bogus job s -- echo still-ran > "$T/out" 2>&1; rc=$?
-check "a failing disk check doesn't stop the job" '[ $rc -eq 0 ] && grep -q still-ran "$T/out"'
+reset; echo 12 > "$T/free"; XQ_LOW_AGE=bogus job s -- bash -c 'cat "$XQ_DIR/slots/$XQ_SLOT/info"' > "$T/out" 2>&1; rc=$?
+check "a failing disk check doesn't stop the job or lose its slot" '[ $rc -eq 0 ] && grep -q "^[0-9]* [0-9]* s bash" "$T/out"'
 reset; echo 200 > "$T/free"; job s -- true > "$T/out" 2>&1
 check "enough disk: no warning, nothing deleted" '! grep -q WARNING "$T/out" && [ "$(deleted)" = 0 ]'
 

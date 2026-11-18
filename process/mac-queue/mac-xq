@@ -330,7 +330,9 @@ prune() {
     if [ -n "$dry" ]; then
       printf '  would delete %-26s %s  %s GB, unused %s\n' "$name" "$u" "$(gb "$b")" "$(human_age "$ag")"
     else
-      owned_by "$name" "$(busy_sessions)" && continue   # its session started a job since the list was made
+      # Since the list was made, its session may have started a job or `xq sim` may have booted it.
+      owned_by "$name" "$(busy_sessions)" && continue
+      xcrun simctl list devices 2>/dev/null | grep -qF "($u) (Shutdown)" || continue
       with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1 || { echo "xq prune: could not delete $name ($u)"; continue; }
       forget_sim "$u" "$name"; echo "  deleted $name ($u, $(gb "$b") GB)"
     fi
