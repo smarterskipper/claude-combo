@@ -139,4 +139,8 @@ reset; mkdir -p "$T/state/queue"; sleep 30 & sp=$!; echo "$sp a 1" > "$T/state/q
 
 XQ_CLAIM_TTL=0.5 "$XQ" --help >/dev/null 2>&1 && ok "fractional settings don't break startup" || no "fractional settings don't break startup"
 
+reset; "$XQ" prune --older-than 6h --dry-run > /dev/null 2>&1
+grep -q "^mini ~/bin/xq prune --older-than 6h --dry-run$" "$STUB/log" && grep -q "^macbook ~/bin/xq prune --older-than 6h --dry-run$" "$STUB/log" \
+  && ok "prune goes to every Mac with its options" || no "prune goes to every Mac with its options"
+
 echo; echo "$pass passed, $fail failed"; [ "$fail" = 0 ]

@@ -14,6 +14,9 @@ the building Mac. Only test runs: signing, archives and TestFlight never come he
 The split comes from the last green run's times in ~/.cache/xq/timings. The first shard skips what the others
 run, instead of listing what it runs, so a new test can't be missed. With no times yet the whole suite is one
 shard. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" and "** TEST SUCCEEDED **" lines.
+
+When the run ends, pass or fail, its simulators (xq-<session>-<n>, xq-<session>-b-<n>) are deleted, about 2 GB
+each. Set XQ_KEEP_SIMS=1 to keep them. Long-lived names such as fulltest keep theirs (the Mac's xq decides).
 """
 import argparse
 import collections
@@ -186,6 +189,17 @@ def ssh(mac, cmd, **kw):
     return subprocess.run(SSH + [mac, cmd], **kw)
 
 
+def cleanup_cmds(used, session, remote, keep_sims):
+    """(mac, command) per Mac the run used: remove the run's folder and, unless kept, its simulators. The build
+    Mac's simulators carry the session's name, the other Mac's <session>-b. A Mac's xq leaves long-lived ones
+    alone, and an older xq without drop just fails quietly."""
+    out = []
+    for mac, s in zip(used, [session, f"{session}-b"]):
+        drop = "" if keep_sims else f"; ~/bin/xq drop {s} >&2 2>/dev/null"
+        out.append((mac, f"rm -rf {remote} 2>/dev/null{drop}"))
+    return out
+
+
 def send_products(src, dst, products, ship, xctestrun, remote):
     """Mac to Mac through this box. Plain tar: the app is mostly already compressed art."""
     paths = " ".join(f"'{p}'" for p in ship + [xctestrun])
@@ -233,13 +247,17 @@ def main():
     rows = free_macs()
     sims_a = a.sims if rows.get(mac, (0, 0, 0, 0))[2] == 0 else 1
     used, jobs = [mac], []
+    keep_sims = os.environ.get("XQ_KEEP_SIMS") == "1"
 
     def clean(*_):
         for j in jobs:
             if j.proc.poll() is None:
                 j.proc.terminate()
-        for m in used:
-            ssh(m, f"rm -rf {remote}", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for m, cmd in cleanup_cmds(used, a.session, remote, keep_sims):
+            try:
+                ssh(m, cmd, stdout=subprocess.DEVNULL, timeout=300)
+            except subprocess.TimeoutExpired:
+                print(f"xq test: cleaning up on {m} timed out", file=sys.stderr)
 
     def on_signal(n, _):
         clean()

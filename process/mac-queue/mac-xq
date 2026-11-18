@@ -9,18 +9,30 @@
 #   xq kick <session>          stop that session's job and free the slot (only after asking the
 #                              other sessions and nobody claimed it)
 #   xq gc                      shut down xq-* sims whose session has been idle > 30 min
+#   xq prune [--older-than 2d] [--dry-run]   delete shut-down run simulators unused that long
+#   xq drop <session>          delete xq-<session>-<n>, the simulators of one finished xq test run
+# Run simulators are what `xq sim` makes: an iPhone 17 Pro on the default runtime. prune and drop never touch
+# other devices or runtimes, the POOL below, names in ~/.config/xq/keep-sims (one glob per line), a booted
+# simulator (prune), or one whose session holds a slot or waits for one. When a job gets its slot with under
+# XQ_LOW_GB (30) GB free, xq warns and first prunes what has been unused for XQ_LOW_AGE (3h).
 # Stale jobs are removed: a waiter whose session died leaves the line; a slot whose holder
 # died, or that has run longer than XQ_MAX_RUN seconds (default 5400 = 90 min), is freed
 # (an over-time holder is stopped first). Check-ins: a holder that keeps using CPU checks in
 # automatically every XQ_BEAT s (60); otherwise its session must run `xq checkin <session>`.
 # No check-in for XQ_CHECKIN s (300) = MISSED (waiters are warned); for XQ_HUNG s (600) = HUNG,
 # and the head waiter stops it and takes the slot.
-# Env: XQ_SLOTS (default 3 since 2026-10-17 night, Boston; was 2 since 2026-10-11 — backup ~/bin/xq.bak-2slots-20261017), XQ_MAX_RUN, XQ_BEAT, XQ_CHECKIN, XQ_HUNG.
+# Env: XQ_MAC_SLOTS (this Mac's default is on the SLOTS= line; setup-mac.sh <mac> xq keeps it), XQ_MAX_RUN,
+# XQ_BEAT, XQ_CHECKIN, XQ_HUNG, XQ_RUNTIME (for new simulators), XQ_LOW_GB, XQ_LOW_AGE.
 # Jobs get XQ_SLOT (slot number) and XQ_SESSION in their environment (used by ~/bin/ci for warm lanes).
 # State lives in /tmp/xq. Only ever touches simulators named xq-*.
 set -u
 Q=${XQ_DIR:-/tmp/xq}; SLOTS=${XQ_MAC_SLOTS:-3}; MAX_RUN=${XQ_MAX_RUN:-5400}; DEVICE="iPhone 17 Pro"
 BEAT=${XQ_BEAT:-60}; CHECKIN=${XQ_CHECKIN:-300}; HUNG=${XQ_HUNG:-600}
+RUNTIME_DEFAULT=com.apple.CoreSimulator.SimRuntime.iOS-26-4; DEVICE_ID=com.apple.CoreSimulator.SimDeviceType.${DEVICE// /-}
+LOW_GB=${XQ_LOW_GB:-30}; LOW_AGE=${XQ_LOW_AGE:-3h}; PY=${XQ_PY:-/usr/bin/python3}
+KEEP_FILE=${XQ_KEEP_FILE:-$HOME/.config/xq/keep-sims}
+# Long-lived simulators, reused on purpose (a new one costs a cold first run, and first-boot banners in shots).
+POOL='xq-tf* xq-shots-* xq-ftime-* xq-freelooks xq-fulltest xq-fulltest-*'
 mkdir -p "$Q/slots" "$Q/queue" "$Q/seen"
 
 die() { echo "xq: $*" >&2; exit 1; }
@@ -145,6 +157,8 @@ run() {
       keep=""; for b in $busy; do [ "$s" = "$b" ] || [ "${s#"$b"-}" != "$s" ] && keep=1; done
       [ -n "$keep" ] || xcrun simctl shutdown "$u" >/dev/null 2>&1
     done
+  # Its own subshell: a slip in the disk check must not end a job that already holds the slot.
+  ( low_disk ) </dev/null || true
   export XQ_SLOT="${SLOT##*/}" XQ_SESSION="$S"
   "$@"   # foreground: Ctrl-C reaches it; kill -9 of xq orphans it but the slot is reclaimed
   exit $?
@@ -157,7 +171,7 @@ boot() { with_timeout 180 xcrun simctl bootstatus "$1" -b >/dev/null 2>&1; }
 sim() {
   local s=$1 u; u=$(sim_udid "$s")
   if [ -z "$u" ]; then
-    u=$(xcrun simctl create "xq-$s" "$DEVICE" "${XQ_RUNTIME:-com.apple.CoreSimulator.SimRuntime.iOS-26-4}") || die "could not create xq-$s"
+    u=$(xcrun simctl create "xq-$s" "$DEVICE" "${XQ_RUNTIME:-$RUNTIME_DEFAULT}") || die "could not create xq-$s"
     echo "xq: created xq-$s ($u)" >&2
   fi
   if ! { boot "$u" && probe "$u"; }; then
@@ -229,13 +243,136 @@ gc() {
   done
 }
 
+# Sessions that hold a live slot or wait for one, space-separated.
+busy_sessions() {
+  local f pid s out=""
+  for f in "$Q"/slots/*/info; do [ -e "$f" ] && read -r pid _ s _ 2>/dev/null < "$f" && alive "$pid" && out="$out $s"; done
+  for f in "$Q"/queue/*; do [ -e "$f" ] && read -r pid s _ 2>/dev/null < "$f" && alive "$pid" && out="$out $s"; done
+  echo "$out"
+}
+# True if simulator $1 (xq-<session> or xq-<session>-<suffix>) belongs to one of the sessions in $2.
+owned_by() { local b n=${1#xq-}; for b in $2; do { [ "$n" = "$b" ] || [ "${n#"$b"-}" != "$n" ]; } && return 0; done; return 1; }
+
+# Picks deletable simulators from `simctl list devices -j` on stdin; prints "udid state bytes age-secs name".
+# Same rules for prune and drop: run simulators only, never kept or busy ones. A simulator with no known age stays.
+read -r -d '' PICK <<'PY'
+import fnmatch, json, os, re, sys, time
+from datetime import datetime, timezone
+mode, arg, q, runtime, devtype, busy, keep = sys.argv[1:8]
+busy, keep, now = busy.split(), keep.split(), time.time()
+def stamp(s):
+    try: return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError: return None
+def mtime(p):
+    try: return os.path.getmtime(p)
+    except OSError: return None
+for d in json.load(sys.stdin)["devices"].get(runtime, []):
+    n = d.get("name", ""); s = n[3:]
+    if not n.startswith("xq-") or d.get("deviceTypeIdentifier") != devtype: continue
+    if any(fnmatch.fnmatchcase(n, k) for k in keep): continue
+    if any(s == b or s.startswith(b + "-") for b in busy): continue
+    if mode == "drop":
+        if not re.fullmatch(re.escape(arg) + r"-[0-9]+", s): continue
+        age = 0
+    else:
+        if d.get("state") != "Shutdown": continue
+        dp = d.get("dataPath") or ""
+        used = [stamp(d.get("lastUsedAt") or ""), stamp(d.get("lastBootedAt") or ""), mtime(os.path.join(q, "seen", s)),
+                mtime(os.path.join(os.path.dirname(dp), "device.plist")) if dp else None]
+        used = [t for t in used if t]
+        if not used: continue
+        age = now - max(used)
+        if age < float(arg): continue
+    print(d["udid"], d.get("state", "?"), int(d.get("dataPathSize") or 0), int(age), n)
+PY
+
+# $1 $2: prune <secs> | drop <session>
+sim_candidates() {
+  local keep="$POOL" l w json
+  if [ -r "$KEEP_FILE" ]; then
+    while IFS= read -r l || [ -n "$l" ]; do l=${l%%#*}; for w in $l; do keep="$keep $w"; done; done < "$KEEP_FILE"
+  fi
+  json=$(with_timeout 60 xcrun simctl list devices -j) || return 1
+  "$PY" -c "$PICK" "$1" "$2" "$Q" "$RUNTIME_DEFAULT" "$DEVICE_ID" "$(busy_sessions)" "$keep" <<<"$json"
+}
+
+# 30m, 6h, 2d or plain seconds -> seconds
+secs_of() {
+  case $1 in
+    ''|*[!0-9dhms]*|[dhms]*|*[dhms]*[0-9dhms]) return 1 ;;
+    *d) echo $(( ${1%d} * 86400 )) ;; *h) echo $(( ${1%h} * 3600 )) ;; *m) echo $(( ${1%m} * 60 )) ;;
+    *s) echo "${1%s}" ;; *) echo "$1" ;;
+  esac
+}
+human_age() { if [ "$1" -ge 86400 ]; then echo "$(($1 / 86400))d"; elif [ "$1" -ge 3600 ]; then echo "$(($1 / 3600))h"; else echo "$(($1 / 60))m"; fi; }
+gb() { awk -v b="$1" 'BEGIN{printf "%.1f", b / 1e9}'; }
+forget_sim() { rm -f "$Q/seen/${2#xq-}" "$Q/seen/.mad-$1"; }
+
+prune() {
+  local age=2d dry="" secs list u st b ag name n=0 bytes=0 verb=deleted tail=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --older-than) [ $# -ge 2 ] || die "usage: xq prune [--older-than 2d] [--dry-run]"; age=$2; shift 2 ;;
+      --older-than=*) age=${1#*=}; shift ;;
+      --dry-run|-n) dry=1; verb="would delete"; shift ;;
+      *) die "usage: xq prune [--older-than 2d] [--dry-run]" ;;
+    esac
+  done
+  secs=$(secs_of "$age") || die "--older-than takes 30m, 6h, 2d or seconds, not '$age'"
+  if [ -z "$dry" ] && ! mkdir "$Q/.prune" 2>/dev/null; then
+    # One prune at a time; a lock older than 15 min is left by a prune that died.
+    [ -n "$(find "$Q/.prune" -maxdepth 0 -mmin +15 2>/dev/null)" ] || { echo "xq prune: another prune is running"; return 0; }
+    touch "$Q/.prune"
+  fi
+  list=$(sim_candidates prune "$secs") || { [ -n "$dry" ] || rm -rf "$Q/.prune"; die "could not list simulators"; }
+  while read -r u st b ag name; do
+    [ -n "$u" ] || continue
+    if [ -n "$dry" ]; then
+      printf '  would delete %-26s %s  %s GB, unused %s\n' "$name" "$u" "$(gb "$b")" "$(human_age "$ag")"
+    else
+      owned_by "$name" "$(busy_sessions)" && continue   # its session started a job since the list was made
+      with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1 || { echo "xq prune: could not delete $name ($u)"; continue; }
+      forget_sim "$u" "$name"; echo "  deleted $name ($u, $(gb "$b") GB)"
+    fi
+    n=$((n + 1)); bytes=$((bytes + b))
+  done <<<"$list"
+  [ -n "$dry" ] || rm -rf "$Q/.prune"
+  [ -z "$dry" ] && [ "$n" -gt 0 ] && tail="; macOS frees the space over a few minutes"
+  echo "xq prune: $verb $n simulator(s) unused for $age, $(gb "$bytes") GB$tail"
+}
+
+# Deletes the simulators of one finished xq test run, after waiting briefly for its own job to leave the slot.
+drop() {
+  local s=$1 i list u st b ag name n=0
+  for i in $(seq 1 "${XQ_DROP_WAIT:-30}"); do owned_by "xq-$s" "$(busy_sessions)" || break; sleep 1; done
+  list=$(sim_candidates drop "$s") || die "could not list simulators"
+  while read -r u st b ag name; do
+    [ -n "$u" ] || continue
+    [ "$st" = Shutdown ] || with_timeout 60 xcrun simctl shutdown "$u" >/dev/null 2>&1
+    with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1 || { echo "xq drop: could not delete $name ($u)"; continue; }
+    forget_sim "$u" "$name"; n=$((n + 1))
+  done <<<"$list"
+  echo "xq drop: deleted $n simulator(s) of $s"
+}
+
+# A full disk stops every build, so under LOW_GB free a job first clears out run simulators unused for LOW_AGE.
+low_disk() {
+  local free; free=$(df -g ~ 2>/dev/null | awk 'NR==2{print $4}')
+  case $free in ''|*[!0-9]*) return 0 ;; esac
+  [ "$free" -lt "$LOW_GB" ] || return 0
+  echo "xq: WARNING only $free GB free on $(hostname -s) (under $LOW_GB GB); deleting run simulators unused for $LOW_AGE" >&2
+  prune --older-than "$LOW_AGE" >&2
+}
+
 case "${1:-}" in
   status) status ;;
   gc) gc ;;
   sim) [ $# -eq 2 ] || die "usage: xq sim <session>"; check_name "$2"; sim "$2" ;;
   checkin) [ $# -eq 2 ] || die "usage: xq checkin <session>"; check_name "$2"; checkin "$2" ;;
   kick) [ $# -eq 2 ] || die "usage: xq kick <session>"; check_name "$2"; kick "$2" ;;
-  ""|-h|--help) sed -n '2,11p' "$0" ;;
+  prune) shift; prune "$@" ;;
+  drop) [ $# -eq 2 ] || die "usage: xq drop <session>"; check_name "$2"; drop "$2" ;;
+  ""|-h|--help) sed -n '2,/^# Stale jobs/p' "$0" | sed '$d' ;;
   *) [ "${2:-}" = "--" ] && [ $# -ge 3 ] || die "usage: xq <session> -- <command...>  (see xq --help)"
      check_name "$1"; s=$1; shift 2; run "$s" "$@" ;;
 esac
