@@ -56,7 +56,7 @@ step_xq() {
   n=${n:-$SLOTS}
   sed -E "s/SLOTS=\\\$\{XQ_MAC_SLOTS:-[0-9]+\}/SLOTS=\${XQ_MAC_SLOTS:-$n}/" "$HERE/mac-xq" > "$t/xq"
   grep -q "SLOTS=\${XQ_MAC_SLOTS:-$n}" "$t/xq" || { echo "setting the slot count failed: mac-xq changed shape"; return 1; }
-  sed -i "2a # This Mac's copy, from claude-combo process/mac-queue/mac-xq on $(date +%F): $n slot(s)." "$t/xq"
+  sed -i "/^set -u$/i # This Mac's copy, from claude-combo process/mac-queue/mac-xq on $(date +%F): $n slot(s)." "$t/xq"
   bash -n "$t/xq" || return 1
   on 'mkdir -p ~/bin' && scp -q "${SSHO[@]}" "$t/xq" "$M:bin/.xq.new" || return 1
   on "chmod +x ~/bin/.xq.new && /bin/bash -n ~/bin/.xq.new && ~/bin/.xq.new status >/dev/null &&
