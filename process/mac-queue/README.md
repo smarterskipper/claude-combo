@@ -18,11 +18,13 @@ How a Mac is chosen:
 | `XQ_HOST=<alias>` set | that Mac |
 | Archive, export, upload, `devicectl`, keychain unlock | MacBook: signing only lives there |
 | Names a simulator UDID or a `/tmp/` path | the session's Mac, because that state lives there |
-| Anything else | the session's Mac if free, otherwise the first free Mac in the list |
+| Anything else | the session's Mac if it has a free slot, otherwise the free Mac with the smallest share of its slots in use |
+
+A Mac's slots in use are its working jobs, the jobs waiting in its own queue, and jobs sent from here that haven't reached it yet. Shares are compared, not counts, so the 2-slot mini and the 3-slot MacBook fill evenly. A tie goes to the Mac listed first. With both Macs idle, the first job goes to the mini, the next to the MacBook, then MacBook, mini, MacBook. Jobs started together spread over both Macs instead of filling the mini first.
 
 If every Mac is full, the job waits in one line on ubuntu-pc, in arrival order, and goes to the first Mac that frees up. A Mac that's down is skipped, so losing the mini means everything runs on the MacBook as before.
 
-The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last so Boston's laptop takes the overflow.
+The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last, so a lone job on idle Macs runs on the mini and leaves Boston's laptop alone.
 
 ## Full test runs across both Macs
 
