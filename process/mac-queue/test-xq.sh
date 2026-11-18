@@ -44,8 +44,26 @@ reset; "$XQ" a -- echo hi 2>/dev/null
 reset; full mini; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on macbook)" = 1 ] && ok "overflow goes to the next Mac" || no "overflow goes to the next Mac"
 
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; echo 1 > "$STUB/mini/busy"; "$XQ" a -- echo hi 2>/dev/null
+[ "$(ran_on macbook)" = 1 ] && ok "a job goes to the least busy Mac, not the first with room" || no "a job goes to the least busy Mac, not the first with room"
+
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; touch "$STUB"/{mini,macbook}/{nostart,hold}
+"$XQ" a -- echo 1 2>/dev/null & "$XQ" b -- echo 2 2>/dev/null & wait
+[ "$(ran_on mini)" = 1 ] && [ "$(ran_on macbook)" = 1 ] && ok "two jobs at once on idle Macs spread over both" || no "two jobs at once on idle Macs spread over both: $(cat "$STUB/log")"
+
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; got=""
+for s in a b c d e; do got+="$("$XQ" pick $s 2>/dev/null) "; done
+[ "$got" = "mini macbook macbook mini macbook " ] && ok "picks fill the Macs by share of slots in use" || no "picks fill the Macs by share of slots in use ($got)"
+
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; m=$("$XQ" pick a 2>/dev/null); "$XQ" b -- echo hi 2>/dev/null
+[ "$m" = mini ] && [ "$(ran_on macbook)" = 1 ] && ok "a pick (as xq test does) and a plain job started together split" || no "a pick (as xq test does) and a plain job started together split ($m)"
+
 reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on mini)" = 1 ] && ok "free pinned Mac is kept" || no "free pinned Mac is kept"
+
+reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; echo 2 > "$STUB/mini/slots"; echo 1 > "$STUB/mini/busy"
+"$XQ" a -- echo hi 2>/dev/null
+[ "$(ran_on mini)" = 1 ] && ok "pinned Mac with room is kept even if another is idler" || no "pinned Mac with room is kept even if another is idler"
 
 reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; full mini; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on macbook)" = 1 ] && [ "$("$XQ" host a)" = macbook ] && ok "full pinned Mac: moves, and the pin follows" || no "full pinned Mac: moves, and the pin follows"
