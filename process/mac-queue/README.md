@@ -56,7 +56,45 @@ Measured at menos-ios fedbaf3e7 (3853 tests, 6 skipped, 0 failed), 2026-11-07, b
 
 Most of the time left is the build. `-collect-test-diagnostics never` alone saves about 9 s per `xcodebuild` run, and the failure text is still in the log. Xcode's own `-parallel-testing-enabled` doesn't help: 96 s with 4 workers against 90 s without, because it clones and boots simulators on each run and keeps a class on one worker.
 
-Tests: `python3 test-xq-test.py` covers the split and the merge.
+Tests: `python3 test-xq-test.py` covers the split, the merge and the clean-up commands.
+
+## Simulators and disk space
+
+Each new session name gets its own simulators, about 2 GB each once used: `xq sim <s>` makes `xq-<s>`, and `xq test <s>` makes `xq-<s>-1`, `xq-<s>-2` on the build Mac and `xq-<s>-b-1`, `xq-<s>-b-2` on the other. A run with about 40 gate tags filled both disks on 2026-11-18, so they are now cleaned up in three ways:
+
+```bash
+xq prune --dry-run                    # every Mac: what would go
+xq prune --older-than 2d              # every Mac: delete it (2d is the default)
+ssh mini1 '~/bin/xq prune -n'         # one Mac
+XQ_KEEP_SIMS=1 xq test mytag <sha>    # keep this run's simulators
+```
+
+- **After `xq test`**, pass or fail, the run's simulators are deleted (`~/bin/xq drop <s>` on each Mac it used). Set `XQ_KEEP_SIMS=1` to keep them.
+- **`xq prune`** deletes shut-down simulators that nobody has used for `--older-than` (`30m`, `6h`, `2d`). It measures that from the simulator's last boot, its last `xq sim`, or its creation, whichever is latest.
+- **When a job gets its slot with under 30 GB free** (`XQ_LOW_GB`), the Mac's xq warns and first prunes what has been unused for 3 hours (`XQ_LOW_AGE`). macOS frees deleted simulators over a few minutes, through `$TMPDIR/Deleting-*` folders.
+
+Only run simulators are ever deleted. That means an iPhone 17 Pro on the default iOS 26.4 runtime, which is what `xq sim` makes. These are never deleted:
+
+| Kept | Why |
+|---|---|
+| `xq-tf*`, `xq-shots-*`, `xq-ftime-*`, `xq-freelooks`, `xq-fulltest`, `xq-fulltest-*` | Reused on purpose. A new one costs a cold first run (150 s against 65 s for `fulltest`), and its first boot puts banners on screenshots. Gates should keep using `fulltest`. |
+| Any other device or runtime (`-promax`, `-se`, `-std`, watches, iOS 27.2) | Made on purpose by shot scripts or `setup-mac.sh sims`. |
+| A name or glob in the Mac's `~/.config/xq/keep-sims`, one per line | Kept by hand. mini1 keeps `xq-l10n253-02-ios27` this way. |
+| A booted simulator (prune), or one whose session holds a slot or waits for one | It is in use. |
+| A simulator with no date to measure from | Its age is unknown, so it stays. |
+
+The pool list is `POOL` near the top of `mac-xq`. Add a name there, or to a Mac's `keep-sims`, before a new long-lived simulator goes into use.
+
+## Installing the Mac side
+
+`mac-xq` is each Mac's `~/bin/xq`: its own queue, `xq sim`, `prune` and `drop`. Install it with:
+
+```bash
+bash setup-mac.sh mini1 xq
+bash setup-mac.sh macbook xq
+```
+
+This keeps the Mac's slot count (mini1 2, MacBook 3), checks the new copy with the Mac's bash 3.2, backs up the old one as `~/bin/xq.bak-<date-time>`, and renames the new one into place. A job already running keeps reading the old file. Edit `mac-xq` here, not on a Mac.
 
 ## Adding a Mac
 
@@ -67,7 +105,7 @@ Tests: `python3 test-xq-test.py` covers the split and the merge.
 
 ## Tests
 
-`bash test-xq.sh` runs against a stub ssh and touches no real Mac.
+`bash test-xq.sh` runs against a stub ssh and touches no real Mac. `bash test-mac-xq.sh` covers the Mac side's prune, drop and low-disk check, against a stub `xcrun` and `df`. It runs on Linux bash, so `setup-mac.sh <mac> xq` also checks the Mac's bash 3.2 before installing.
 
 ## Xcode versions
 

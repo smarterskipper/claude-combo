@@ -2,16 +2,18 @@
 # setup-mac.sh <alias> <step> - brings a new build Mac in line with the MacBook, run from ubuntu-pc.
 # Steps (each is safe to re-run):
 #   check   what's there: macOS, Xcode, brew, GitHub sign-in, disk, sleep settings, simulator runtimes
-#   tools   copies ~/bin/xq, ~/bin/ci and ~/ci/README.md from the MacBook, then patches this Mac's xq copy
+#   tools   copies ~/bin/ci and ~/ci/README.md from the MacBook, then installs xq (the xq step)
+#   xq      installs this folder's mac-xq as ~/bin/xq, keeping the Mac's slot count; the old one stays as a backup
 #   xcode   streams /Applications/Xcode.app from the MacBook (no Apple ID needed; needs a person for sudo after)
 #   runtimes  downloads the iOS and watchOS simulators (needs the Xcode license accepted first)
 #   brew    installs the build tools the gates use
 #   ci      creates ~/ci/<repo> with remote and keep.list. Add --secrets to also copy secrets/ Mac to Mac
 #   sims    creates every xq-* simulator the MacBook has, same name and device type
 #   warm    boots each xq-* iPhone simulator that has never booted, once, through the Mac's queue
-# A step that needs a person (sudo, GitHub sign-in) says so. Nothing here touches the MacBook except reads.
+# A step that needs a person (sudo, GitHub sign-in) says so. Only `xq` run for the MacBook itself writes to it.
 set -u -o pipefail
-M=${1:-}; STEP=${2:-}; [ -n "$M" ] && [ -n "$STEP" ] || { sed -n '2,12p' "$0"; exit 1; }
+M=${1:-}; STEP=${2:-}; [ -n "$M" ] && [ -n "$STEP" ] || { sed -n '2,13p' "$0"; exit 1; }
+HERE=$(cd "$(dirname "$0")" && pwd)
 SRC=${XQ_SRC_MAC:-macbook}
 SLOTS=${XQ_NEW_SLOTS:-1}
 TOOLS="xcodegen gh node"
@@ -37,14 +39,35 @@ R
 
 step_tools() {
   local t; t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
-  scp -q "${SSHO[@]}" "$SRC:bin/xq" "$SRC:bin/ci" "$SRC:ci/README.md" "$t/" || return 1
-  # Slots: older scripts still set XQ_SLOTS=2 for the MacBook, so this Mac reads its own variable instead.
-  # Watcher: its `sleep` otherwise keeps the job's stderr open, and ssh stays connected up to 60 s after the job ends.
-  sed -E -i "s/SLOTS=\\\$\{XQ_SLOTS:-[0-9]+\}/SLOTS=\${XQ_MAC_SLOTS:-$SLOTS}/; s/^( *)watch_job \\\$\\\$ \"\\\$SLOT\" & WATCH=\\\$!/\1watch_job \$\$ \"\$SLOT\" <\/dev\/null >\/dev\/null 2>\&1 \& WATCH=\$!/" "$t/xq"
-  grep -q "XQ_MAC_SLOTS:-$SLOTS" "$t/xq" && grep -q 'watch_job $$ "$SLOT" </dev/null' "$t/xq" || { echo "patching xq failed: the MacBook's copy changed shape"; return 1; }
-  sed -i "2a # This Mac's copy (from the MacBook on $(date +%F)): $SLOTS slot(s) via XQ_MAC_SLOTS, watcher detached from stderr." "$t/xq"
+  if [ "$M" != "$SRC" ]; then
+    scp -q "${SSHO[@]}" "$SRC:bin/ci" "$SRC:ci/README.md" "$t/" || return 1
+    on 'mkdir -p ~/bin ~/ci' && scp -q "${SSHO[@]}" "$t/ci" "$M:bin/" && scp -q "${SSHO[@]}" "$t/README.md" "$M:ci/README.md" &&
+      on 'chmod +x ~/bin/ci' || return 1
+  fi
+  step_xq
+}
+
+# The Mac's own queue. Its slot count stays: the SLOTS= line is also what ubuntu-pc's xq reads. A new Mac gets
+# XQ_NEW_SLOTS. The new copy is checked on the Mac (macOS bash is 3.2) and then renamed over the old one, so a
+# job starting meanwhile reads either the old file or the new one.
+step_xq() {
+  local t n; t=$(mktemp -d); trap 'rm -rf "$t"' RETURN
+  # A failed read must not reset a Mac to XQ_NEW_SLOTS, so only a Mac with no ~/bin/xq gets that.
+  if on '[ -e ~/bin/xq ]'; then
+    n=$(on 'cat ~/bin/xq' | sed -nE 's/.*SLOTS=\$\{XQ_(MAC_)?SLOTS:-([0-9]+)\}.*/\2/p' | head -1)
+    [ -n "$n" ] || { echo "could not read $M's slot count; nothing installed"; return 1; }
+  else
+    on true || { echo "$M is unreachable"; return 1; }
+    n=$SLOTS
+  fi
+  sed -E "s/SLOTS=\\\$\{XQ_MAC_SLOTS:-[0-9]+\}/SLOTS=\${XQ_MAC_SLOTS:-$n}/" "$HERE/mac-xq" > "$t/xq"
+  grep -q "SLOTS=\${XQ_MAC_SLOTS:-$n}" "$t/xq" || { echo "setting the slot count failed: mac-xq changed shape"; return 1; }
+  sed -i "/^set -u$/i # This Mac's copy, from claude-combo process/mac-queue/mac-xq on $(date +%F): $n slot(s)." "$t/xq"
   bash -n "$t/xq" || return 1
-  on 'mkdir -p ~/bin ~/ci' && scp -q "${SSHO[@]}" "$t/xq" "$t/ci" "$M:bin/" && scp -q "${SSHO[@]}" "$t/README.md" "$M:ci/README.md" && on 'chmod +x ~/bin/xq ~/bin/ci && ~/bin/xq status | sed "/^sims:/,\$d"'
+  on 'mkdir -p ~/bin' && scp -q "${SSHO[@]}" "$t/xq" "$M:bin/.xq.new" || return 1
+  on "chmod +x ~/bin/.xq.new && /bin/bash -n ~/bin/.xq.new && ~/bin/.xq.new status >/dev/null &&
+      { [ ! -e ~/bin/xq ] || cp -p ~/bin/xq ~/bin/xq.bak-$(date +%Y%m%d-%H%M%S); } && mv ~/bin/.xq.new ~/bin/xq &&
+      ~/bin/xq status | sed '/^sims:/,\$d'" || { echo "installing xq on $M failed; the old copy is still in place"; return 1; }
 }
 
 step_xcode() {
@@ -122,7 +145,7 @@ EOF
 }
 
 case "$STEP" in
-  check|tools|xcode|runtimes|brew|sims|warm) "step_$STEP" ;;
+  check|tools|xq|xcode|runtimes|brew|sims|warm) "step_$STEP" ;;
   ci) step_ci "${3:-}" ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,13p' "$0"; exit 1 ;;
 esac

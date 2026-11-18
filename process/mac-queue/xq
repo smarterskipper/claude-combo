@@ -15,6 +15,8 @@
 #   xq status                       every Mac's slots and queue, and who is waiting here
 #   xq checkin|kick <session>       passed to the Mac holding that session's job
 #   xq gc                           passed to every Mac
+#   xq prune [--older-than 2d] [--dry-run]   passed to every Mac: deletes shut-down run simulators unused that
+#                                   long, never the long-lived ones (README, "Simulators and disk space")
 # Which Mac:
 #   XQ_HOST=<alias> set                     that Mac
 #   signing, upload or physical-device job  the MacBook (signing only lives there; a job that hides this inside
@@ -260,6 +262,9 @@ case "${1:-}" in
   free) probe_all ;;
   test) shift; exec python3 "$(dirname "$(readlink -f "$0")")/xq-test" "$@" ;;
   gc) for m in $(macs); do timeout 60 "$SSH" "${SSHO[@]}" "$m" '~/bin/xq gc' </dev/null; done ;;
+  prune) shift; for m in $(macs); do
+           echo "== $m"; timeout 900 "$SSH" "${SSHO[@]}" "$m" "~/bin/xq prune $(quote "$@")" </dev/null || echo "  failed or unreachable"
+         done ;;
   pick) [ $# -eq 2 ] || die "usage: xq pick <session>"; check_name "$2"; cmd_pick "$2" ;;
   host) [ $# -eq 2 ] || die "usage: xq host <session>"; check_name "$2"; p=$(pin_get "$2"); echo "${p:-$SIGN_MAC}" ;;
   sim) [ $# -eq 2 ] || die "usage: xq sim <session>"; check_name "$2"; cmd_sim "$2" ;;

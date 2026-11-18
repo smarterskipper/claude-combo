@@ -123,5 +123,21 @@ class Merge(unittest.TestCase):
         self.assertTrue(xt.merge([self.shard(a="passed", b="passed")], 2)["ok"])
 
 
+class Cleanup(unittest.TestCase):
+    def test_each_mac_drops_its_own_simulators(self):
+        cmds = xt.cleanup_cmds(["mini1", "macbook"], "ru7gate", "/tmp/xqt/ru7gate-1", False)
+        self.assertEqual([m for m, _ in cmds], ["mini1", "macbook"])
+        self.assertIn("~/bin/xq drop ru7gate ", cmds[0][1])
+        self.assertIn("~/bin/xq drop ru7gate-b ", cmds[1][1])
+        self.assertTrue(all(c.startswith("rm -rf /tmp/xqt/ru7gate-1") for _, c in cmds))
+
+    def test_one_mac_run_drops_on_that_mac_only(self):
+        self.assertEqual(len(xt.cleanup_cmds(["mini1"], "t", "/tmp/xqt/t-1", False)), 1)
+
+    def test_keep_sims_only_removes_the_folder(self):
+        cmds = xt.cleanup_cmds(["mini1", "macbook"], "t", "/tmp/xqt/t-1", True)
+        self.assertTrue(all("drop" not in c for _, c in cmds))
+
+
 if __name__ == "__main__":
     unittest.main()
