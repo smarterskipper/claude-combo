@@ -18,13 +18,19 @@ How a Mac is chosen:
 | `XQ_HOST=<alias>` set | that Mac |
 | Archive, export, upload, `devicectl`, keychain unlock | MacBook: signing only lives there |
 | Names a simulator UDID or a `/tmp/` path | the session's Mac, because that state lives there |
-| Anything else | the session's Mac if it has a free slot, otherwise the free Mac with the smallest share of its slots in use |
+| Anything else, `ci run` lanes included | the free Mac with the smallest share of its slots in use. The session's Mac moves with the job |
 
-A Mac's slots in use are its working jobs, the jobs waiting in its own queue, and jobs sent from here that haven't reached it yet. Shares are compared, not counts, so the 2-slot mini and the 3-slot MacBook fill evenly. A tie goes to the Mac listed first. With both Macs idle, the first job goes to the mini, the next to the MacBook, then MacBook, mini, MacBook. Jobs started together spread over both Macs instead of filling the mini first.
+A Mac's slots in use are its working jobs, the jobs waiting in its own queue, and jobs sent from here that haven't reached it yet. Shares are compared, not counts, so the 2-slot mini and the 3-slot MacBook fill evenly. A tie goes to the session's last Mac, then to the Mac listed first.
+
+The session's last Mac (its pin) holds a job only when the job needs something that lives there: a simulator UDID or a `/tmp/` path in the command. A plain job never waits on a busier Mac because the session ran there before. Each Mac has its own warm clone and DerivedData for every `ci run` lane, so moving costs nothing. Three things keep the session's Mac:
+
+- `xq pick <session>` keeps it while it has a free slot, so a gate run that picks again stays with its simulators. Until that pick's job reaches the Mac, the session's plain jobs follow the pick too. `xq pick --fresh` takes the least busy Mac instead.
+- `xq sim` and `xq cp` use the session's Mac, because the simulator and files are there.
+- `XQ_HOST=<alias>` sends the job to that Mac. Gate scripts put `XQ_HOST="$MAC"` in front of every job of the run. With both Macs idle, the first job goes to the mini, the next to the MacBook, then MacBook, mini, MacBook. Jobs started together spread over both Macs instead of filling the mini first.
 
 If every Mac is full, the job waits in one line on ubuntu-pc, in arrival order, and goes to the first Mac that frees up. A Mac that's down is skipped, so losing the mini means everything runs on the MacBook as before.
 
-The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last, so a lone job on idle Macs runs on the mini and leaves Boston's laptop alone.
+The list of Macs is `~/.config/xq/macs`, preferred first. The MacBook goes last, so a lone job from a new session on idle Macs runs on the mini and leaves Boston's laptop alone.
 
 ## Full test runs across both Macs
 
@@ -35,7 +41,7 @@ xq test fulltest <sha> --bundle commits.bundle    # work that isn't on GitHub ye
 
 Use the session name `fulltest` unless two runs need to go at once: the simulators are named after the session, and a new name's first run takes more than twice as long (150 s against 65 s) while they are made and booted for the first time.
 
-This builds once in the first free Mac's warm lane, copies the app (about 250 MB, through ubuntu-pc) to the other Mac if it has a free slot, and runs `test-without-building` on two simulators per idle Mac. A Mac with another job running gets one simulator, and if the other Mac is full or down everything stays on the building Mac. The result is one pass or fail, with the usual `Executed N tests` and `** TEST SUCCEEDED **` lines and exit code 0 or 1. Logs stay in `~/.cache/xq/test-runs/<id>/`. Run `xq test -h` for the options. Only test runs go through it: signing, archives and TestFlight stay on the MacBook.
+This builds once in the warm lane of the least busy free Mac (`xq pick --fresh`, so not the session's last Mac when that one is busier). It copies the app (about 250 MB, through ubuntu-pc) to the least busy other Mac with a free slot, and runs `test-without-building` on two simulators per idle Mac. A Mac with another job running gets one simulator, and if the other Mac is full or down everything stays on the building Mac. The result is one pass or fail, with the usual `Executed N tests` and `** TEST SUCCEEDED **` lines and exit code 0 or 1. Logs stay in `~/.cache/xq/test-runs/<id>/`. Run `xq test -h` for the options. Only test runs go through it: signing, archives and TestFlight stay on the MacBook.
 
 Runs in one session go one at a time, so gates can all share `fulltest`. The lanes in `post-3.0/batch/gates/{cb1,cbtwo,iw,cs1,bw,sg}` send a full-suite gate here through `gates/fulltest.sh`: `gaterun.sh <sha> <tag> tests` or `all` with no test classes. Named classes, `build` and `ui` runs stay on one Mac as before.
 

@@ -61,9 +61,42 @@ reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; m=$("$XQ" pi
 reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on mini)" = 1 ] && ok "free pinned Mac is kept" || no "free pinned Mac is kept"
 
-reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; echo 2 > "$STUB/mini/slots"; echo 1 > "$STUB/mini/busy"
+# The live case: mini 1 of 2 busy, the MacBook idle, the session pinned to mini.
+pinbusy() { reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; echo 1 > "$STUB/mini/busy"; }
+
+pinbusy; "$XQ" a -- echo hi 2>/dev/null
+[ "$(ran_on macbook)" = 1 ] && [ "$("$XQ" host a)" = macbook ] && ok "a pin doesn't hold a plain job on a busier Mac; the pin moves" || no "a pin doesn't hold a plain job on a busier Mac; the pin moves"
+
+pinbusy; "$XQ" a -- ~/bin/ci run scrapwing 0123abc -- bash -c 'xcodebuild test' 2>/dev/null
+[ "$(ran_on macbook)" = 1 ] && ok "a ci run lane goes to the idler Mac too" || no "a ci run lane goes to the idler Mac too"
+
+pinbusy; "$XQ" a -- xcodebuild test -destination id=1DF7A941-C442-4653-8A2D-0A4BEA6FC975 2>/dev/null
+[ "$(ran_on mini)" = 1 ] && ok "a UDID job stays on its busy pinned Mac" || no "a UDID job stays on its busy pinned Mac"
+
+pinbusy; "$XQ" a -- bash /tmp/a-gate.sh 2>/dev/null
+[ "$(ran_on mini)" = 1 ] && [ "$("$XQ" host a)" = mini ] && ok "a /tmp/ job stays on its busy pinned Mac" || no "a /tmp/ job stays on its busy pinned Mac"
+
+pinbusy; m=$("$XQ" pick a 2>/dev/null)
+[ "$m" = mini ] && ok "xq pick keeps the session's Mac while it has room" || no "xq pick keeps the session's Mac while it has room ($m)"
+
+pinbusy; m=$("$XQ" pick --fresh a 2>/dev/null)
+[ "$m" = macbook ] && [ "$("$XQ" host a)" = macbook ] && ok "xq pick --fresh (xq test) takes the idler Mac" || no "xq pick --fresh (xq test) takes the idler Mac ($m)"
+
+pinbusy; "$XQ" sim a >/dev/null 2>&1
+[ "$("$XQ" host a)" = mini ] && ok "xq sim stays on the busy pinned Mac" || no "xq sim stays on the busy pinned Mac"
+
+pinbusy; echo 0 > "$STUB/mini/busy"; echo 1 > "$STUB/macbook/busy"; echo macbook > "$T/state/pins/a"; m=$("$XQ" pick a 2>/dev/null)
 "$XQ" a -- echo hi 2>/dev/null
-[ "$(ran_on mini)" = 1 ] && ok "pinned Mac with room is kept even if another is idler" || no "pinned Mac with room is kept even if another is idler"
+[ "$m" = macbook ] && [ "$(ran_on macbook)" = 1 ] && ok "a job follows the Mac its session just picked, even if busier" || no "a job follows the Mac its session just picked ($m)"
+
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; mkdir -p "$T/state/pins"; echo macbook > "$T/state/pins/a"
+"$XQ" a -- echo hi 2>/dev/null
+[ "$(ran_on macbook)" = 1 ] && ok "on a tie the session's Mac wins over list order" || no "on a tie the session's Mac wins over list order"
+
+reset; echo 2 > "$STUB/mini/slots"; echo 3 > "$STUB/macbook/slots"; touch "$STUB"/{mini,macbook}/{nostart,hold}
+mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; echo mini > "$T/state/pins/b"
+"$XQ" a -- echo 1 2>/dev/null & "$XQ" b -- echo 2 2>/dev/null & wait
+[ "$(ran_on mini)" = 1 ] && [ "$(ran_on macbook)" = 1 ] && ok "two sessions pinned to one Mac, started together, spread" || no "two sessions pinned to one Mac, started together, spread: $(cat "$STUB/log")"
 
 reset; mkdir -p "$T/state/pins"; echo mini > "$T/state/pins/a"; full mini; "$XQ" a -- echo hi 2>/dev/null
 [ "$(ran_on macbook)" = 1 ] && [ "$("$XQ" host a)" = macbook ] && ok "full pinned Mac: moves, and the pin follows" || no "full pinned Mac: moves, and the pin follows"
