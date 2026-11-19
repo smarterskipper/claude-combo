@@ -16,8 +16,11 @@ The split comes from the last green run's times in ~/.cache/xq/timings. The firs
 run, instead of listing what it runs, so a new test can't be missed. With no times yet the whole suite is one
 shard. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" and "** TEST SUCCEEDED **" lines.
 
-When the run ends, pass or fail, its simulators (xq-<session>-<n>, xq-<session>-b-<n>) are deleted, about 2 GB
-each. Set XQ_KEEP_SIMS=1 to keep them. Long-lived names such as fulltest keep theirs (the Mac's xq decides).
+Simulators come from each Mac's pool (xq-pool-<k>): booted, wiped of the last run's apps, keychain, permissions
+and pasteboard, and shared by every session, so a run skips the create and the first boot. What the pool can't
+give is made for the run as xq-<session>-<n> (xq-<session>-b-<n> on the other Mac) and deleted when the run ends,
+about 2 GB each. XQ_FRESH_SIMS=1 skips the pool for one run; XQ_KEEP_SIMS=1 keeps that run's own simulators.
+Long-lived names such as fulltest keep their own simulators (the Mac's xq decides).
 """
 import argparse
 import collections
@@ -37,7 +40,7 @@ WORKER = os.path.join(HERE, "xq-test-worker.sh")
 CACHE = os.environ.get("XQ_STATE", os.path.expanduser("~/.cache/xq"))
 SSH = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"]
 SCP = ["scp", "-q", "-o", "BatchMode=yes"]
-B_START_DELAY = 10   # seconds the second Mac starts behind: its job, the copy and a simulator boot
+B_START_DELAY = 10   # seconds the second Mac starts behind: its job and the copy (a pool simulator is booted)
 SPLIT_AT = 0.5       # a class over this share of one shard's time is split by method
 KEEP_RUNS = 20
 
@@ -173,6 +176,9 @@ class Job:
                 self.built.set()
             elif p[1] == "pin":
                 self.events.append(p)
+            elif p[1] == "sims":
+                print(f"  [{self.mac}] simulators ready {p[2]} s after the start ({p[3] if len(p) > 3 else '?'})",
+                      flush=True)
             elif p[1] == "shard":
                 self.shards[p[2]] = {"rc": int(p[3]), "secs": int(p[4]), "retried": p[5] == "1"}
                 print(f"  [{self.mac}] {p[2]} done in {p[4]} s" + (" (second try)" if p[5] == "1" else ""), flush=True)
@@ -249,6 +255,8 @@ def main():
     sims_a = a.sims if rows.get(mac, (0, 0, 0, 0))[2] == 0 else 1
     used, jobs = [mac], []
     keep_sims = os.environ.get("XQ_KEEP_SIMS") == "1"
+    # The worker reads this file: no pool simulators for this run.
+    fresh = f"; touch {remote}/fresh" if os.environ.get("XQ_FRESH_SIMS") == "1" else ""
 
     def clean(*_):
         for j in jobs:
@@ -267,7 +275,7 @@ def main():
     signal.signal(signal.SIGTERM, on_signal)
 
     try:
-        ssh(mac, f"mkdir -p {remote}", check=True)
+        ssh(mac, f"mkdir -p {remote}{fresh}", check=True)
         worker = f"{remote}/worker.sh"
         subprocess.run(SCP + [WORKER, f"{mac}:{worker}"], check=True)
         bundle = []
@@ -314,7 +322,7 @@ def main():
         sender = None
         if counts["b"]:
             used.append(other)
-            ssh(other, f"mkdir -p {remote}", check=True)
+            ssh(other, f"mkdir -p {remote}{fresh}", check=True)
             subprocess.run(SCP + [WORKER] + args_of("b") + [f"{other}:{remote}/"], check=True)
             ssh(other, f"mv {remote}/{os.path.basename(WORKER)} {worker}", check=True)
             sender = threading.Thread(target=lambda: send_rc.__setitem__(

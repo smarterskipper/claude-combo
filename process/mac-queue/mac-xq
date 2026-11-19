@@ -11,6 +11,15 @@
 #   xq gc                      shut down xq-* sims whose session has been idle > 30 min
 #   xq prune [--older-than 2d] [--dry-run]   delete shut-down run simulators unused that long
 #   xq drop <session>          delete xq-<session>-<n>, the simulators of one finished xq test run
+#   xq lease <session> <n> <pid>   take up to n of xq test's pool simulators (xq-pool-<k>) for job pid <pid>;
+#                              prints "pool-<k> warm|cold|new" per line, nothing for a long-lived session name
+#   xq ready <pool-k>          boot it and wipe what the last run left; prints its UDID (fails: it was deleted)
+#   xq unlease <pid> <pool-k>...   hand them back (a dead or over-time pid's lease ends by itself)
+# The pool: one shared set of booted iPhone simulators per Mac, at most XQ_POOL_MAX (2 per slot), so a run skips
+# the create and the 50 s first boot. ready uninstalls every user app (data and app-group containers go with
+# them) and resets the keychain, permissions and pasteboard. A run that wrote to Photos, Contacts, Calendar or
+# Health gets its simulator erased instead. Slot grabs leave pool simulators booted; one unused for XQ_POOL_IDLE
+# (2h) is shut down, and prune deletes it like any other run simulator.
 # Run simulators are what `xq sim` makes: an iPhone 17 Pro on the default runtime. prune and drop never touch
 # other devices or runtimes, the POOL below, names in ~/.config/xq/keep-sims (one glob per line), a booted
 # simulator (prune), or one whose session holds a slot or waits for one. When a job gets its slot with under
@@ -22,7 +31,7 @@
 # No check-in for XQ_CHECKIN s (300) = MISSED (waiters are warned); for XQ_HUNG s (600) = HUNG,
 # and the head waiter stops it and takes the slot.
 # Env: XQ_MAC_SLOTS (this Mac's default is on the SLOTS= line; setup-mac.sh <mac> xq keeps it), XQ_MAX_RUN,
-# XQ_BEAT, XQ_CHECKIN, XQ_HUNG, XQ_RUNTIME (for new simulators), XQ_LOW_GB, XQ_LOW_AGE.
+# XQ_BEAT, XQ_CHECKIN, XQ_HUNG, XQ_RUNTIME (for new simulators), XQ_LOW_GB, XQ_LOW_AGE, XQ_POOL_MAX, XQ_POOL_IDLE.
 # Jobs get XQ_SLOT (slot number) and XQ_SESSION in their environment (used by ~/bin/ci for warm lanes).
 # State lives in /tmp/xq. Only ever touches simulators named xq-*.
 set -u
@@ -31,16 +40,24 @@ BEAT=${XQ_BEAT:-60}; CHECKIN=${XQ_CHECKIN:-300}; HUNG=${XQ_HUNG:-600}
 RUNTIME_DEFAULT=com.apple.CoreSimulator.SimRuntime.iOS-26-4; DEVICE_ID=com.apple.CoreSimulator.SimDeviceType.${DEVICE// /-}
 LOW_GB=${XQ_LOW_GB:-30}; LOW_AGE=${XQ_LOW_AGE:-3h}; PY=${XQ_PY:-/usr/bin/python3}
 KEEP_FILE=${XQ_KEEP_FILE:-$HOME/.config/xq/keep-sims}
+POOL_MAX=${XQ_POOL_MAX:-$((SLOTS * 2))}; POOL_IDLE=${XQ_POOL_IDLE:-7200}
+SIM_HOME=${XQ_SIM_HOME:-$HOME/Library/Developer/CoreSimulator/Devices}
+# Shared stores an app can write to that survive its uninstall (paths under the simulator's data folder).
+STORES='Library/AddressBook Library/Calendar Library/Health Media/PhotoData'
 # Long-lived simulators, reused on purpose (a new one costs a cold first run, and first-boot banners in shots).
 POOL='xq-tf* xq-shots-* xq-ftime-* xq-freelooks xq-fulltest xq-fulltest-*'
-mkdir -p "$Q/slots" "$Q/queue" "$Q/seen"
+mkdir -p "$Q/slots" "$Q/queue" "$Q/seen" "$Q/pool"
 
 die() { echo "xq: $*" >&2; exit 1; }
 now() { date +%s; }
 alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 # macOS has no `timeout`; SIGALRM survives exec and kills the command.
 with_timeout() { local s=$1; shift; perl -e 'alarm shift; exec @ARGV or die' "$s" "$@"; }
-check_name() { [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] || die "session name must match [A-Za-z0-9_-]+: '$1'"; }
+check_name() {
+  [[ $1 =~ ^[A-Za-z0-9_-]+$ ]] || die "session name must match [A-Za-z0-9_-]+: '$1'"
+  [[ $1 == pool || $1 == pool-* ]] && die "'$1': pool names belong to xq test's simulator pool"
+  return 0
+}
 
 # Frees the slot only while it is still ours: if it was reclaimed and handed on, the new holder keeps it
 # (removing it let a third job in, whose ci run then killed the new holder: slot 1 ping-ponged, 2026-10-24).
@@ -154,6 +171,7 @@ run() {
   for j in $(seq 1 "$SLOTS"); do read -r hp _ hs _ 2>/dev/null < "$Q/slots/$j/info" && alive "$hp" && busy="$busy$hs "; done
   xcrun simctl list devices 2>/dev/null | sed -nE "s/^ +xq-([A-Za-z0-9_-]+) \(([0-9A-F-]{36})\) \(Booted\).*/\1 \2/p" |
     while read -r s u; do
+      case $s in pool-[0-9]*) pool_idle "$s" "$u"; continue ;; esac
       keep=""; for b in $busy; do [ "$s" = "$b" ] || [ "${s#"$b"-}" != "$s" ] && keep=1; done
       [ -n "$keep" ] || xcrun simctl shutdown "$u" >/dev/null 2>&1
     done
@@ -206,6 +224,11 @@ status() {
   for f in "$Q"/queue/*; do [ -e "$f" ] && read -r pid s < "$f" && echo "  $s (pid $pid)"; done
   echo "sims:"
   xcrun simctl list devices | grep -E '^ +xq-' || echo "  (none)"
+  echo "pool (xq test, at most $POOL_MAX):"
+  pool_sims | while read -r name u st; do
+    if lease_live "$name"; then read -r pid _ s _ < "$Q/pool/$name"; echo "  xq-$name $st, leased by $s (pid $pid)"
+    else echo "  xq-$name $st, free"; fi
+  done
 }
 
 checkin() {
@@ -236,6 +259,7 @@ gc() {
   done
   xcrun simctl list devices | sed -nE 's/^ +xq-([A-Za-z0-9_-]+) \(([0-9A-F-]{36})\) \(Booted\).*/\1 \2/p' |
   while read -r s u; do
+    case $s in pool-[0-9]*) pool_idle "$s" "$u" && echo "xq gc: shut down idle xq-$s ($u)"; continue ;; esac
     [[ $busy == *" $s "* ]] && continue
     [ -e "$Q/seen/$s" ] || { touch "$Q/seen/$s"; continue; }   # unknown age: start the clock now
     [ -n "$(find "$Q/seen/$s" -mmin +30)" ] || continue
@@ -248,6 +272,7 @@ busy_sessions() {
   local f pid s out=""
   for f in "$Q"/slots/*/info; do [ -e "$f" ] && read -r pid _ s _ 2>/dev/null < "$f" && alive "$pid" && out="$out $s"; done
   for f in "$Q"/queue/*; do [ -e "$f" ] && read -r pid s _ 2>/dev/null < "$f" && alive "$pid" && out="$out $s"; done
+  for f in "$Q"/pool/pool-*; do [ -e "$f" ] && lease_live "${f##*/}" && out="$out ${f##*/}"; done
   echo "$out"
 }
 # True if simulator $1 (xq-<session> or xq-<session>-<suffix>) belongs to one of the sessions in $2.
@@ -287,13 +312,18 @@ for d in json.load(sys.stdin)["devices"].get(runtime, []):
 PY
 
 # $1 $2: prune <secs> | drop <session>
-sim_candidates() {
-  local keep="$POOL" l w json
+# The long-lived names: POOL plus the Mac's keep-sims file. Callers expand it with set -f (they are globs).
+keep_globs() {
+  local keep="$POOL" l w
   if [ -r "$KEEP_FILE" ]; then
-    while IFS= read -r l || [ -n "$l" ]; do l=${l%%#*}; for w in $l; do keep="$keep $w"; done; done < "$KEEP_FILE"
+    set -f; while IFS= read -r l || [ -n "$l" ]; do l=${l%%#*}; for w in $l; do keep="$keep $w"; done; done < "$KEEP_FILE"; set +f
   fi
+  echo "$keep"
+}
+sim_candidates() {
+  local json
   json=$(with_timeout 60 xcrun simctl list devices -j) || return 1
-  "$PY" -c "$PICK" "$1" "$2" "$Q" "$RUNTIME_DEFAULT" "$DEVICE_ID" "$(busy_sessions)" "$keep" <<<"$json"
+  "$PY" -c "$PICK" "$1" "$2" "$Q" "$RUNTIME_DEFAULT" "$DEVICE_ID" "$(busy_sessions)" "$(keep_globs)" <<<"$json"
 }
 
 # 30m, 6h, 2d or plain seconds -> seconds
@@ -330,10 +360,14 @@ prune() {
     if [ -n "$dry" ]; then
       printf '  would delete %-26s %s  %s GB, unused %s\n' "$name" "$u" "$(gb "$b")" "$(human_age "$ag")"
     else
-      # Since the list was made, its session may have started a job or `xq sim` may have booted it.
-      owned_by "$name" "$(busy_sessions)" && continue
-      xcrun simctl list devices 2>/dev/null | grep -qF "($u) (Shutdown)" || continue
-      with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1 || { echo "xq prune: could not delete $name ($u)"; continue; }
+      # Since the list was made, its session may have started a job or `xq sim` may have booted it. A pool
+      # simulator is checked and deleted under the lock that xq lease takes, so a lease can't land in between.
+      local locked=""; case $name in xq-pool-*) lock && locked=1 || continue ;; esac
+      if owned_by "$name" "$(busy_sessions)" || ! xcrun simctl list devices 2>/dev/null | grep -qF "($u) (Shutdown)"; then
+        [ -n "$locked" ] && unlock; continue
+      fi
+      with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1 || { [ -n "$locked" ] && unlock; echo "xq prune: could not delete $name ($u)"; continue; }
+      [ -n "$locked" ] && unlock
       forget_sim "$u" "$name"; echo "  deleted $name ($u, $(gb "$b") GB)"
     fi
     n=$((n + 1)); bytes=$((bytes + b))
@@ -366,8 +400,123 @@ low_disk() {
   prune --older-than "$LOW_AGE" >&2
 }
 
+# --- xq test's simulator pool: xq-pool-<k>, shared by every session's runs on this Mac ---
+# A lease is $Q/pool/pool-<k> = "pid start session". It holds while that pid lives and for at most MAX_RUN, so a
+# killed run's simulators come back by themselves. The wipe happens on the way out (xq ready), not on hand-back,
+# so a run that never handed back can't pass on its data. /tmp/xq goes at a reboot, which only ends the leases.
+lease_live() { local pid start; read -r pid start _ 2>/dev/null < "$Q/pool/$1" || return 1; alive "$pid" && [ $(( $(now) - start )) -le "$MAX_RUN" ]; }
+# "pool-<k> <udid> <Booted|Shutdown>", by k
+pool_sims() {
+  xcrun simctl list devices 2>/dev/null | sed -nE 's/^ +xq-(pool-[0-9]+) \(([0-9A-F-]{36})\) \((Booted|Shutdown)\).*/\1 \2 \3/p' | sort -t- -k2,2n
+}
+
+# $1 session, $2 count, $3 the job's pid. Prints "pool-<k> warm|cold|new" per simulator it got, which can be fewer
+# than asked (the pool is full: the caller makes its own as before), or none for a long-lived name like fulltest,
+# which keeps its own simulators.
+lease() {
+  local s=$1 want=$2 pid=$3 g got=0 out="" name u st pass k have
+  set -f
+  # shellcheck disable=SC2254  # the keep list is globs
+  for g in $(keep_globs); do case "xq-$s-1" in $g) set +f; return 0 ;; esac; done
+  set +f
+  lock || die "could not take the lock"
+  have=$(pool_sims)
+  for pass in Booted Shutdown; do
+    while read -r name u st; do
+      [ -n "$name" ] && [ "$st" = "$pass" ] && [ "$got" -lt "$want" ] || continue
+      lease_live "$name" && continue
+      echo "$pid $(now) $s" > "$Q/pool/$name"; got=$((got + 1))
+      [ "$st" = Booted ] && out="$out$name warm\n" || out="$out$name cold\n"
+    done <<<"$have"
+  done
+  k=1
+  while [ "$got" -lt "$want" ] && [ "$(grep -c . <<<"$have")" -lt "$POOL_MAX" ]; do
+    while grep -q "^pool-$k " <<<"$have"; do k=$((k + 1)); done
+    u=$(with_timeout 60 xcrun simctl create "xq-pool-$k" "$DEVICE" "$RUNTIME_DEFAULT" 2>/dev/null) || break
+    echo "$pid $(now) $s" > "$Q/pool/pool-$k"; got=$((got + 1)); out="${out}pool-$k new\n"
+    have=$(printf '%s\npool-%s %s Shutdown' "$have" "$k" "$u" | grep .)
+  done
+  unlock
+  printf "$out"
+}
+
+# Prints the user apps on simulator $1, one bundle id per line. Fails if it can't tell.
+user_apps() {
+  local j; j=$(with_timeout 30 xcrun simctl listapps "$1" 2>/dev/null | plutil -convert json -o - - 2>/dev/null) || return 1
+  "$PY" -c 'import json, sys
+for k, v in json.load(sys.stdin).items():
+    if v.get("ApplicationType") == "User": print(k)' <<<"$j"
+}
+
+# Wipes what the last run left on booted pool simulator $1 ($2 its udid). Removing an app removes its data, its
+# app-group and extension containers; the keychain, permission grants and pasteboard survive that, so they are
+# reset. Photos, Contacts, Calendar and Health survive too, and a run that wrote to them gets an erase.
+pool_wipe() {
+  local name=$1 u=$2 dir="$SIM_HOME/$2" a apps left
+  if [ -e "$dir/xq-wiped" ] && [ -n "$(cd "$dir/data" 2>/dev/null && find $STORES -newer "$dir/xq-wiped" -type f 2>/dev/null | head -1)" ]; then
+    echo "xq: xq-$name: the last run wrote to Photos, Contacts, Calendar or Health; erasing it (one first boot)" >&2
+    with_timeout 60 xcrun simctl shutdown "$u" >/dev/null 2>&1
+    with_timeout 120 xcrun simctl erase "$u" >/dev/null 2>&1 || return 1
+    rm -f "$Q/seen/.mad-$u"; ( sim "$name" ) >/dev/null || return 1
+  else
+    apps=$(user_apps "$u") || return 1
+    for a in $apps; do with_timeout 60 xcrun simctl uninstall "$u" "$a" >/dev/null 2>&1 || return 1; done
+    left=$(user_apps "$u") || return 1; [ -z "$left" ] || return 1
+    with_timeout 30 xcrun simctl keychain "$u" reset >/dev/null 2>&1 || return 1
+    with_timeout 30 xcrun simctl privacy "$u" reset all >/dev/null 2>&1 || return 1
+    with_timeout 30 xcrun simctl pbcopy "$u" </dev/null >/dev/null 2>&1 || return 1
+  fi
+  mkdir -p "$dir" && touch "$dir/xq-wiped"
+}
+
+# Deletes pool simulator $1 and its lease: it couldn't be booted or wiped, so nobody gets it.
+pool_discard() {
+  local u; u=$(sim_udid "$1")
+  if [ -n "$u" ]; then
+    with_timeout 60 xcrun simctl shutdown "$u" >/dev/null 2>&1
+    with_timeout 120 xcrun simctl delete "$u" >/dev/null 2>&1
+    forget_sim "$u" "xq-$1"
+  fi
+  rm -f "$Q/pool/$1"
+}
+
+# Boots leased pool simulator $1 and wipes it; prints the UDID. On failure it is deleted and this fails.
+ready() {
+  local name=$1 u
+  lease_live "$name" || die "xq-$name is not leased (xq lease first)"
+  if ! u=$(sim "$name") || ! pool_wipe "$name" "$u"; then
+    echo "xq: xq-$name could not be booted or wiped; deleting it" >&2
+    pool_discard "$name"; return 1
+  fi
+  echo "$u"
+}
+
+# $1 the pid that leased them, then names. Leaves a lease alone that someone else holds now.
+unlease() {
+  local pid=$1 n p; shift
+  for n in "$@"; do
+    read -r p _ 2>/dev/null < "$Q/pool/$n" && [ "$p" = "$pid" ] && rm -f "$Q/pool/$n" && touch "$Q/seen/$n"
+  done
+  return 0
+}
+
+# Shuts down pool simulator $1 ($2 udid) if nobody leases it and nobody has used it for POOL_IDLE seconds.
+pool_idle() {
+  local f="$Q/seen/$1"
+  lease_live "$1" && return 1
+  [ -e "$f" ] || { touch "$f"; return 1; }   # unknown age: start the clock now
+  [ $(( $(now) - $(perl -e 'print +(stat shift)[9]' "$f") )) -gt "$POOL_IDLE" ] || return 1
+  xcrun simctl shutdown "$2" >/dev/null 2>&1
+}
+
 case "${1:-}" in
   status) status ;;
+  lease) [ $# -eq 4 ] && [[ $3 =~ ^[0-9]+$ ]] && [[ $4 =~ ^[0-9]+$ ]] || die "usage: xq lease <session> <n> <pid>"
+         check_name "$2"; lease "$2" "$3" "$4" ;;
+  ready) [ $# -eq 2 ] && [[ $2 =~ ^pool-[0-9]+$ ]] || die "usage: xq ready pool-<k>"; ready "$2" ;;
+  unlease) [ $# -ge 2 ] && [[ $2 =~ ^[0-9]+$ ]] || die "usage: xq unlease <pid> pool-<k>..."
+           for n in "${@:3}"; do [[ $n =~ ^pool-[0-9]+$ ]] || die "not a pool simulator: '$n'"; done
+           unlease "${@:2}" ;;
   gc) gc ;;
   sim) [ $# -eq 2 ] || die "usage: xq sim <session>"; check_name "$2"; sim "$2" ;;
   checkin) [ $# -eq 2 ] || die "usage: xq checkin <session>"; check_name "$2"; checkin "$2" ;;

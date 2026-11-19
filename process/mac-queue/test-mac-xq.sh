@@ -5,25 +5,58 @@
 HERE=$(cd "$(dirname "$0")" && pwd); XQ=$HERE/mac-xq
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
-export PATH="$T/bin:$PATH" XQ_DIR=$T/q XQ_KEEP_FILE=$T/keep-sims XQ_PY=python3 XQ_DROP_WAIT=1 STUB=$T
+export PATH="$T/bin:$PATH" XQ_DIR=$T/q XQ_KEEP_FILE=$T/keep-sims XQ_PY=python3 XQ_DROP_WAIT=1 STUB=$T XQ_SIM_HOME=$T/devices
 cat > "$T/bin/xcrun" <<'S'
+#!/usr/bin/env python3
+# Stub simctl over $STUB/devices.json. Logs what changes a simulator to $STUB/log. A deleted one is hidden.
+import json, os, sys, uuid
+st = os.environ["STUB"]; db = f"{st}/devices.json"; a = sys.argv[1:]
+if a[0] != "simctl": sys.exit(1)
+devs = json.load(open(db)); cmd = a[1]
+def log(line): open(f"{st}/log", "a").write(line + "\n")
+def save(): json.dump(devs, open(db, "w"))
+def find(u): return next(d for v in devs["devices"].values() for d in v if d["udid"] == u and not d.get("deleted"))
+def apps(u):
+    p = f"{st}/apps/{u}"
+    return [l for l in open(p).read().split() if l] if os.path.exists(p) else []
+if cmd == "list":
+    live = {rt: [d for d in v if not d.get("deleted")] for rt, v in devs["devices"].items()}
+    if len(a) > 3 and a[3] == "-j": print(json.dumps({"devices": live}))
+    else:
+        for v in live.values():
+            for d in v: print("    %s (%s) (%s)" % (d["name"], d["udid"], d["state"]))
+elif cmd == "create":
+    u = str(uuid.uuid4()).upper()
+    devs["devices"].setdefault(a[4], []).append({"name": a[2], "udid": u, "state": "Shutdown", "isAvailable": True,
+        "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType." + a[3].replace(" ", "-"),
+        "dataPath": f"{st}/devices/{u}/data", "dataPathSize": 0})
+    save(); log(f"create {a[2]}"); print(u)
+elif cmd == "bootstatus": find(a[2])["state"] = "Booted"; save(); log(f"boot {a[2]}")
+elif cmd == "shutdown": find(a[2])["state"] = "Shutdown"; save(); log(f"shutdown {a[2]}")
+elif cmd == "delete": find(a[2])["deleted"] = True; save(); log(f"delete {a[2]}")
+elif cmd == "listapps":
+    if os.path.exists(f"{st}/listapps-fail"): sys.exit(1)
+    out = {"com.apple.Preferences": {"ApplicationType": "System"}}
+    out.update({b: {"ApplicationType": "User"} for b in apps(a[2])})
+    print(json.dumps(out))
+elif cmd == "uninstall":
+    log(f"uninstall {a[2]} {a[3]}")
+    if not os.path.exists(f"{st}/uninstall-noop"):
+        open(f"{st}/apps/{a[2]}", "w").write("\n".join(x for x in apps(a[2]) if x != a[3]))
+elif cmd in ("keychain", "privacy", "pbcopy", "erase"): log(f"{cmd} {a[2]}")
+elif cmd == "spawn": pass
+else: sys.exit(1)
+S
+cat > "$T/bin/plutil" <<'S'
 #!/bin/bash
-[ "$1" = simctl ] || exit 1
-case $2 in
-  list) if [ "${4:-}" = -j ]; then cat "$STUB/devices.json"
-        else python3 -c 'import json,sys
-for v in json.load(open(sys.argv[1]))["devices"].values():
-    for d in v: print("    %s (%s) (%s)" % (d["name"], d["udid"], d["state"]))' "$STUB/devices.json"; fi ;;
-  delete|shutdown) echo "$2 $3" >> "$STUB/log" ;;
-  *) exit 1 ;;
-esac
+cat
 S
 cat > "$T/bin/df" <<'S'
 #!/bin/bash
 echo "Filesystem 1G-blocks Used Available Capacity Mounted"
 echo "/dev/disk3s5 460 400 $(cat "$STUB/free") 90% /"
 S
-chmod +x "$T/bin/xcrun" "$T/bin/df"
+chmod +x "$T/bin/xcrun" "$T/bin/df" "$T/bin/plutil"
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok   $1"; }
 no() { fail=$((fail+1)); echo "FAIL $1"; }
@@ -138,6 +171,94 @@ reset; echo 12 > "$T/free"; XQ_LOW_AGE=bogus job s -- bash -c 'cat "$XQ_DIR/slot
 check "a failing disk check doesn't stop the job or lose its slot" '[ $rc -eq 0 ] && grep -q "^[0-9]* [0-9]* s bash" "$T/out"'
 reset; echo 200 > "$T/free"; job s -- true > "$T/out" 2>&1
 check "enough disk: no warning, nothing deleted" '! grep -q WARNING "$T/out" && [ "$(deleted)" = 0 ]'
+
+# --- xq test's simulator pool ---
+# An empty Mac apart from one ordinary booted simulator whose session holds no slot.
+pool_reset() {
+  rm -rf "$XQ_DIR" "$T/devices" "$T/apps" "$T/listapps-fail" "$T/uninstall-noop"; : > "$T/log"
+  mkdir -p "$XQ_DIR/slots" "$XQ_DIR/queue" "$T/apps"; : > "$XQ_KEEP_FILE"; echo 200 > "$T/free"
+  python3 -c 'import json,sys; json.dump({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [
+    {"name": "xq-idle-1", "udid": "00000001-0000-0000-0000-000000000000", "state": "Booted", "isAvailable": True,
+     "deviceTypeIdentifier": "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"}]}}, open(sys.argv[1], "w"))' "$T/devices.json"
+}
+udid_of() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1]))["devices"]; print(next(x["udid"] for v in d.values() for x in v if x["name"]==sys.argv[2] and not x.get("deleted")))' "$T/devices.json" "$1" 2>/dev/null; }
+state_of() { "$T/bin/xcrun" simctl list devices | sed -nE "s/^ +$1 \(.*\) \((.*)\)/\1/p"; }
+dead_pid() { sh -c 'exit 0' & wait $!; echo $!; }
+creates() { grep -c "^create " "$T/log"; }
+
+pool_reset; "$XQ" lease scrap-06 2 $$ > "$T/out" 2>&1
+check "lease on an empty pool makes the simulators" '[ "$(cat "$T/out")" = "$(printf "pool-1 new\npool-2 new")" ] && [ "$(creates)" = 2 ]'
+"$XQ" lease scrap-07 2 $$ > "$T/out" 2>&1
+check "a live lease is not handed out again" '[ "$(cat "$T/out")" = "$(printf "pool-3 new\npool-4 new")" ]'
+"$XQ" unlease $$ pool-1 pool-2; : > "$T/log"; "$XQ" lease scrap-08 1 $$ > "$T/out" 2>&1
+check "a handed-back simulator is reused, nothing is made" '[ "$(cat "$T/out")" = "pool-1 cold" ] && [ "$(creates)" = 0 ]'
+
+pool_reset; XQ_POOL_MAX=3 "$XQ" lease a 2 $$ >/dev/null 2>&1; XQ_POOL_MAX=3 "$XQ" lease b 2 $$ > "$T/out" 2>&1
+check "a full pool gives fewer than asked (the worker makes the rest itself)" '[ "$(cat "$T/out")" = "pool-3 new" ]'
+
+pool_reset; "$XQ" lease a 1 "$(dead_pid)" >/dev/null 2>&1; : > "$T/log"; "$XQ" lease b 1 $$ > "$T/out" 2>&1
+check "a dead job's lease ends by itself" '[ "$(cat "$T/out")" = "pool-1 cold" ] && [ "$(creates)" = 0 ]'
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; echo "$$ $(( $(date +%s) - 9999 )) a" > "$XQ_DIR/pool/pool-1"; "$XQ" lease b 1 $$ > "$T/out" 2>&1
+check "an over-time lease ends by itself" '[ "$(cat "$T/out")" = "pool-1 cold" ]'
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; "$XQ" unlease 1 pool-1
+check "unlease leaves another pid's lease alone" '[ -e "$XQ_DIR/pool/pool-1" ]'
+
+pool_reset; "$XQ" lease fulltest 2 $$ > "$T/out" 2>&1
+check "a long-lived name gets no pool simulators" '[ ! -s "$T/out" ] && [ "$(creates)" = 0 ]'
+pool_reset; echo "xq-mine-*" > "$XQ_KEEP_FILE"; "$XQ" lease mine 2 $$ > "$T/out" 2>&1
+check "neither does a name in keep-sims" '[ ! -s "$T/out" ]'
+pool_reset; "$XQ" lease pool 1 $$ > "$T/out" 2>&1; rc=$?
+check "pool is not a session name" '[ $rc -ne 0 ] && [ "$(creates)" = 0 ]'
+pool_reset; "$XQ" drop pool > "$T/out" 2>&1; rc=$?
+check "xq drop pool is refused" '[ $rc -ne 0 ]'
+
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1)
+printf 'com.x.game\ncom.x.gameUITests.xctrunner\n' > "$T/apps/$u"; mkdir -p "$T/devices/$u"; touch "$T/devices/$u/xq-wiped"
+"$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "ready boots it and prints its id" '[ $rc -eq 0 ] && [ "$(tail -1 "$T/out")" = "$u" ] && grep -q "^boot $u" "$T/log"'
+check "ready uninstalls every user app, the test runner too" 'grep -q "^uninstall $u com.x.game$" "$T/log" && grep -q "^uninstall $u com.x.gameUITests.xctrunner$" "$T/log" && ! grep -q Preferences "$T/log"'
+check "ready resets the keychain, permissions and pasteboard" 'grep -q "^keychain $u" "$T/log" && grep -q "^privacy $u" "$T/log" && grep -q "^pbcopy $u" "$T/log"'
+check "a plain wipe erases nothing" '! grep -q "^erase" "$T/log"'
+
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1); echo com.x.game > "$T/apps/$u"; touch "$T/uninstall-noop"
+"$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "an app that won't uninstall: the simulator is deleted, not handed out" '[ $rc -ne 0 ] && grep -q "^delete $u" "$T/log" && [ ! -e "$XQ_DIR/pool/pool-1" ]'
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1); touch "$T/listapps-fail"
+"$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "an app list it can't read: deleted too" '[ $rc -ne 0 ] && grep -q "^delete $u" "$T/log"'
+
+pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1); d=$T/devices/$u
+mkdir -p "$d/data/Media/PhotoData" "$d/data/Library/AddressBook"; touch "$d/data/Library/AddressBook/old.db"
+touch -d '1 hour ago' "$d/data/Library/AddressBook/old.db"; touch -d '30 min ago' "$d/xq-wiped"
+"$XQ" ready pool-1 > "$T/out" 2>&1
+check "an untouched Photos/Contacts store: no erase" '! grep -q "^erase" "$T/log" && grep -q "^uninstall\|^keychain" "$T/log"'
+touch "$d/data/Media/PhotoData/Photos.sqlite"; touch -d '1 min ago' "$d/xq-wiped"; : > "$T/log"
+"$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "a run that wrote to Photos gets an erase" '[ $rc -eq 0 ] && grep -q "^erase $u" "$T/log" && grep -q "^boot $u" "$T/log" && ! grep -q "^keychain" "$T/log"'
+pool_reset; "$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "ready of an unleased simulator is refused" '[ $rc -ne 0 ]'
+
+# Slot grab: an ordinary idle simulator is shut down, a free pool one stays booted until it's idle for 2 h.
+pool_reset; "$XQ" lease a 3 $$ >/dev/null 2>&1; for k in 1 2 3; do "$XQ" ready pool-$k >/dev/null 2>&1; done
+"$XQ" unlease $$ pool-1 pool-2; touch -d '3 hours ago' "$XQ_DIR/seen/pool-2"; touch -d '3 hours ago' "$XQ_DIR/seen/pool-3"
+: > "$T/log"; job s -- true > "$T/out" 2>&1
+check "slot grab still shuts down an idle session's simulator" '[ "$(state_of xq-idle-1)" = Shutdown ]'
+check "slot grab leaves a free pool simulator booted" '[ "$(state_of xq-pool-1)" = Booted ]'
+check "a pool simulator unused for 2 h is shut down" '[ "$(state_of xq-pool-2)" = Shutdown ]'
+check "a leased pool simulator stays booted, however old" '[ "$(state_of xq-pool-3)" = Booted ]'
+"$XQ" gc > "$T/out" 2>&1
+check "gc follows the same rule" '[ "$(state_of xq-pool-1)" = Booted ] && [ "$(state_of xq-pool-3)" = Booted ]'
+
+# prune: a shut-down pool simulator unused for 2 days goes like any run simulator; a leased one stays.
+pool_reset; "$XQ" lease a 2 $$ >/dev/null 2>&1; "$XQ" unlease $$ pool-1
+python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p))
+for v in d["devices"].values():
+    for x in v: x["lastUsedAt"] = "2020-01-01T00:00:00Z"
+json.dump(d, open(p, "w"))' "$T/devices.json"
+touch -d "3 days ago" "$XQ_DIR/seen/pool-1"; u1=$(udid_of xq-pool-1); u2=$(udid_of xq-pool-2); "$XQ" prune > "$T/out" 2>&1
+check "prune deletes an old shut-down pool simulator" 'grep -q "^delete $u1" "$T/log"'
+check "prune leaves a leased one" '! grep -q "^delete $u2" "$T/log"'
+check "prune leaves the lock free" '[ ! -d "$XQ_DIR/.lock" ]'
 
 reset; "$XQ" --help > "$T/out" 2>&1
 check "help lists prune and drop" 'grep -q "xq prune" "$T/out" && grep -q "xq drop" "$T/out" && ! grep -q "Stale jobs" "$T/out"'
