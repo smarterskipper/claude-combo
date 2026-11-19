@@ -107,7 +107,7 @@ step_sims() {
 import json,sys
 for rt,devs in json.load(sys.stdin)["devices"].items():
     for d in devs:
-        if d["name"].startswith("xq-") and d["isAvailable"]:
+        if d["name"].startswith("xq-") and not d["name"].startswith("xq-pool-") and d["isAvailable"]:
             print(d["name"],d["deviceTypeIdentifier"],rt)' > /tmp/xq-sims.$$
   on 'bash -s' < <(echo 'have=$(xcrun simctl list devices)'; while read -r n t r; do
     echo "grep -q -- ' $n (' <<<\"\$have\" || xcrun simctl create '$n' '$t' '$r' >/dev/null && echo '$n'"

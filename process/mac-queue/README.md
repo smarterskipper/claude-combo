@@ -39,7 +39,7 @@ xq test fulltest <branch-or-sha>
 xq test fulltest <sha> --bundle commits.bundle    # work that isn't on GitHub yet
 ```
 
-Use the session name `fulltest` unless two runs need to go at once: the simulators are named after the session, and a new name's first run takes more than twice as long (150 s against 65 s) while they are made and booted for the first time.
+Any session name will do. The simulators come from each Mac's shared pool (see below), so a new name no longer pays for making and first-booting its own. `fulltest` still keeps its own long-lived simulators.
 
 This builds once in the warm lane of the least busy free Mac (`xq pick --fresh`, so not the session's last Mac when that one is busier). It copies the app (about 250 MB, through ubuntu-pc) to the least busy other Mac with a free slot, and runs `test-without-building` on two simulators per idle Mac. A Mac with another job running gets one simulator, and if the other Mac is full or down everything stays on the building Mac. The result is one pass or fail, with the usual `Executed N tests` and `** TEST SUCCEEDED **` lines and exit code 0 or 1. Logs stay in `~/.cache/xq/test-runs/<id>/`. Run `xq test -h` for the options. Only test runs go through it: signing, archives and TestFlight stay on the MacBook.
 
@@ -68,17 +68,52 @@ Tests: `python3 test-xq-test.py` covers the split, the merge and the clean-up co
 
 ## Simulators and disk space
 
-Each new session name gets its own simulators, about 2 GB each once used: `xq sim <s>` makes `xq-<s>`, and `xq test <s>` makes `xq-<s>-1`, `xq-<s>-2` on the build Mac and `xq-<s>-b-1`, `xq-<s>-b-2` on the other. A run with about 40 gate tags filled both disks on 2026-11-18, so they are now cleaned up in three ways:
+### The pool `xq test` uses
+
+`xq test` takes its simulators from a pool on each Mac, `xq-pool-1`, `xq-pool-2`, …, shared by every session. A pool simulator stays booted between runs, so the next run skips the create and the boot. A new simulator's first boot alone takes 56 s on the MacBook. Before, each run made `xq-<session>-<n>`, booted it and deleted it at the end, and each Scrapwing ticket is a new session.
+
+- **Clean on the way out.** `xq ready` runs when a run takes a simulator, not when the last run gives it back, so a killed run can't pass its data on. It uninstalls every user app, which takes the app's data, app-group and widget containers with it (checked with Menos's `group.com.menosapp.ios`). It also resets the keychain, permission grants and pasteboard. This takes about 1 s.
+- **Erased if a run added to shared stores.** Photos, Contacts and Health survive an uninstall. Their counts (DCIM files, contacts, Health samples) are kept after each wipe, and a run that changed them gets its simulator erased. That costs one boot: 23 s on the MacBook for an erased simulator.
+- **Deleted if the clean-up fails.** If an app won't uninstall or the app list can't be read, the simulator is deleted, and that run makes its own the old way.
+- **Leases end by themselves.** A run leases its simulators under the slot lock. The lease ends when the run hands them back, when its job dies, or after 90 min.
+- **Capped.** A Mac's pool holds at most 2 simulators per slot (`XQ_POOL_MAX`): 4 on mini1, 6 on the MacBook, about 2 GB each. What a full pool can't give, the run makes as `xq-<session>-<n>` and deletes at the end, as before.
+- **Shut down when idle.** A job getting its slot still shuts down other sessions' idle simulators, but leaves pool simulators booted. One unused for 2 h (`XQ_POOL_IDLE`) is shut down then, and `xq prune` deletes it after `--older-than` like any run simulator.
+- **Opt-outs.** `XQ_FRESH_SIMS=1 xq test ...` skips the pool for one run. Long-lived names (`fulltest`, anything in the table below) keep their own simulators.
+- **Mixed versions.** The pool needs the Mac's `~/bin/xq` from this folder. With an older one, `xq test` quietly makes its own simulators as before. `xq sim`, `xq pick` and the gate scripts don't change.
+
+`ssh mini1 '~/bin/xq status'` lists the pool and who holds what. The worker prints when the simulators were ready and where they came from:
+
+```text
+  [mini1] simulators ready 1 s after the start (warm=2)
+```
+
+`warm` is a booted pool simulator, `cold` a shut-down one, `new` one just made, and `session` one made for this run.
+
+Measured on mini1 on 2026-11-18, ScrapwingTests at 53154132 (98 tests), 2 simulators, one Mac, lane already warm:
+
+| Run | Whole run | Start to first test |
+|---|---|---|
+| Before: new `xq-<session>-<n>` simulators each run | 117 s | 90 s |
+| Pool, first run of a new session | 25 s | 7 s |
+| Pool, the next run, another new session | 24 s | 6 s |
+
+The Scrapwing build's own jobs were running on the same Macs during these runs, so whole-run times move by a few seconds. Start to first test is the steadier number. Both Macs got warm pool simulators within 4 s in the same evening's two-Mac runs: ScrapwingUITests (320 s, set by its one 311 s test) and MenosTests (4620 tests, 61 s). After the Menos run, no simulator's photo, contact or Health count had changed, so the next run erased nothing.
+
+Before, the build waited for `xq sim` to make and first-boot the first simulator, and the shards then waited for the second one. A wipe on a warm pool simulator takes about 2 s and runs behind the build. Counting changes rather than file times matters: every boot writes to the Photos, Contacts, Calendar and Health databases. Calendar is not counted, because it fills in its holidays (4 items, then 126) in the half-minute after a boot. A run that only adds calendar events is therefore not caught.
+
+### Clean-up
+
+A run with about 40 gate tags filled both disks on 2026-11-18, so simulators are cleaned up in three ways:
 
 ```bash
 xq prune --dry-run                    # every Mac: what would go
 xq prune --older-than 2d              # every Mac: delete it (2d is the default)
 ssh mini1 '~/bin/xq prune -n'         # one Mac
-XQ_KEEP_SIMS=1 xq test mytag <sha>    # keep this run's simulators
+XQ_KEEP_SIMS=1 xq test mytag <sha>    # keep this run's own (non-pool) simulators
 ```
 
-- **After `xq test`**, pass or fail, the run's simulators are deleted (`~/bin/xq drop <s>` on each Mac it used). Set `XQ_KEEP_SIMS=1` to keep them.
-- **`xq prune`** deletes shut-down simulators that nobody has used for `--older-than` (`30m`, `6h`, `2d`). It measures that from the simulator's last boot, its last `xq sim`, or its creation, whichever is latest.
+- **After `xq test`**, pass or fail, the run's own simulators are deleted (`~/bin/xq drop <s>` on each Mac it used). Set `XQ_KEEP_SIMS=1` to keep them. Pool simulators stay.
+- **`xq prune`** deletes shut-down simulators that nobody has used for `--older-than` (`30m`, `6h`, `2d`). It measures that from the simulator's last boot, its last `xq sim` or pool use, or its creation, whichever is latest. A leased pool simulator is never deleted.
 - **When a job gets its slot with under 30 GB free** (`XQ_LOW_GB`), the Mac's xq warns and first prunes what has been unused for 3 hours (`XQ_LOW_AGE`). macOS frees deleted simulators over a few minutes, through `$TMPDIR/Deleting-*` folders.
 
 Only run simulators are ever deleted. That means an iPhone 17 Pro on the default iOS 26.4 runtime, which is what `xq sim` makes. These are never deleted:
@@ -95,7 +130,7 @@ The pool list is `POOL` near the top of `mac-xq`. Add a name there, or to a Mac'
 
 ## Installing the Mac side
 
-`mac-xq` is each Mac's `~/bin/xq`: its own queue, `xq sim`, `prune` and `drop`. Install it with:
+`mac-xq` is each Mac's `~/bin/xq`: its own queue, `xq sim`, `prune`, `drop` and the pool (`lease`, `ready`, `unlease`). Install it with:
 
 ```bash
 bash setup-mac.sh mini1 xq
@@ -113,7 +148,7 @@ This keeps the Mac's slot count (mini1 2, MacBook 3), checks the new copy with t
 
 ## Tests
 
-`bash test-xq.sh` runs against a stub ssh and touches no real Mac. `bash test-mac-xq.sh` covers the Mac side's prune, drop and low-disk check, against a stub `xcrun` and `df`. It runs on Linux bash, so `setup-mac.sh <mac> xq` also checks the Mac's bash 3.2 before installing.
+`bash test-xq.sh` runs against a stub ssh and touches no real Mac. `bash test-mac-xq.sh` covers the Mac side's prune, drop, low-disk check and simulator pool, against a stub `xcrun`, `plutil` and `df`. It runs on Linux bash, so `setup-mac.sh <mac> xq` also checks the Mac's bash 3.2 before installing.
 
 ## Xcode versions
 
