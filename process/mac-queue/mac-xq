@@ -403,9 +403,9 @@ low_disk() {
 # killed run's simulators come back by themselves. The wipe happens on the way out (xq ready), not on hand-back,
 # so a run that never handed back can't pass on its data. /tmp/xq goes at a reboot, which only ends the leases.
 lease_live() { local pid start; read -r pid start _ 2>/dev/null < "$Q/pool/$1" || return 1; alive "$pid" && [ $(( $(now) - start )) -le "$MAX_RUN" ]; }
-# "pool-<k> <udid> <Booted|Shutdown>", by k
+# "pool-<k> <udid> <state>", by k. Every state counts toward the cap; lease only hands out Booted or Shutdown ones.
 pool_sims() {
-  xcrun simctl list devices 2>/dev/null | sed -nE 's/^ +xq-(pool-[0-9]+) \(([0-9A-F-]{36})\) \((Booted|Shutdown)\).*/\1 \2 \3/p' | sort -t- -k2,2n
+  xcrun simctl list devices 2>/dev/null | sed -nE 's/^ +xq-(pool-[0-9]+) \(([0-9A-F-]{36})\) \(([A-Za-z]+)[^)]*\).*/\1 \2 \3/p' | sort -t- -k2,2n
 }
 
 # $1 session, $2 count, $3 the job's pid. Prints "pool-<k> warm|cold|new" per simulator it got, which can be fewer
@@ -460,8 +460,10 @@ pool_counts() {
 db_count() { [ -e "$1" ] || { echo 0; return; }; with_timeout 20 sqlite3 "file:$1?mode=ro" "select count(*) from $2" 2>/dev/null || echo "?"; }
 pool_wipe() {
   local name=$1 u=$2 dir="$SIM_HOME/$2" a apps left
-  if [ -s "$dir/xq-wiped" ] && [ "$(pool_counts "$dir")" != "$(cat "$dir/xq-wiped")" ]; then
-    echo "xq: xq-$name: the last run added photos, contacts or Health samples ($(cat "$dir/xq-wiped") -> $(pool_counts "$dir")); erasing it" >&2
+  local was now; was=$(cat "$dir/xq-wiped" 2>/dev/null); now=$(pool_counts "$dir")
+  # A count it couldn't read ("?") is no reason to erase.
+  if [ -n "$was" ] && [ "$now" != "$was" ] && [[ $now$was != *"?"* ]]; then
+    echo "xq: xq-$name: the last run added photos, contacts or Health samples ($was -> $now); erasing it" >&2
     with_timeout 60 xcrun simctl shutdown "$u" >/dev/null 2>&1
     with_timeout 120 xcrun simctl erase "$u" >/dev/null 2>&1 || return 1
     rm -f "$Q/seen/.mad-$u"; ( sim "$name" ) >/dev/null || return 1

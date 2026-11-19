@@ -242,6 +242,12 @@ touch "$d/data/Media/DCIM/100APPLE/IMG_0002.JPG"; : > "$T/log"; "$XQ" ready pool
 check "a run that added a photo gets an erase" '[ $rc -eq 0 ] && grep -q "^erase $u" "$T/log" && grep -q "^boot $u" "$T/log" && ! grep -q "^keychain" "$T/log"'
 echo 7 > "$T/count.ABPerson"; : > "$T/log"; "$XQ" ready pool-1 > "$T/out" 2>&1
 check "so does one that added a contact" 'grep -q "^erase $u" "$T/log"'
+echo '?' > "$T/count.ABPerson"; : > "$T/log"; "$XQ" ready pool-1 > "$T/out" 2>&1
+check "a count it can't read is no reason to erase" '! grep -q "^erase" "$T/log"'
+pool_reset; XQ_POOL_MAX=2 "$XQ" lease a 2 $$ >/dev/null 2>&1; "$XQ" unlease $$ pool-1 pool-2
+sed -i 's/"state": "Shutdown"/"state": "Shutting Down"/g' "$T/devices.json"; : > "$T/log"
+XQ_POOL_MAX=2 "$XQ" lease b 1 $$ > "$T/out" 2>&1
+check "a pool simulator mid-shutdown counts toward the cap and isn't handed out" '[ ! -s "$T/out" ] && [ "$(creates)" = 0 ]'
 pool_reset; "$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
 check "ready of an unleased simulator is refused" '[ $rc -ne 0 ]'
 

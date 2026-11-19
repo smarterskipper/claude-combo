@@ -29,9 +29,12 @@ EOF
   for i in $(seq 1 "$SIMS"); do
     if [ -e "$W/pool.$i" ]; then
       # A pool simulator that fails to boot or wipe is deleted by the Mac's xq; this slot then makes its own.
-      ( ~/bin/xq ready "$(cat "$W/pool.$i")" > "$W/sim.$i" 2>>"$W/sims.log" \
-        || { rm -f "$W/pool.$i"; echo failed > "$W/how.$i"; ~/bin/xq sim "$SESSION-$i" > "$W/sim.$i" 2>>"$W/sims.log"; }
-        date +%s > "$W/done.$i" ) &
+      ( if ~/bin/xq ready "$(cat "$W/pool.$i")" > "$W/sim.$i" 2> "$W/ready.$i"; then
+          grep -q erasing "$W/ready.$i" && echo erased > "$W/how.$i"
+        else
+          rm -f "$W/pool.$i"; echo failed > "$W/how.$i"; ~/bin/xq sim "$SESSION-$i" > "$W/sim.$i" 2>>"$W/ready.$i"
+        fi
+        cat "$W/ready.$i" >> "$W/sims.log"; date +%s > "$W/done.$i" ) &
     else
       echo session > "$W/how.$i"
       ( ~/bin/xq sim "$SESSION-$i" > "$W/sim.$i" 2>/dev/null; date +%s > "$W/done.$i" ) &
@@ -40,7 +43,8 @@ EOF
 }
 
 # Call after every boot_sims job is done: tells xq-test how many seconds the simulators took to be ready and where
-# they came from (warm: booted pool simulator, cold: shut-down one, new: just made, session: made for this run).
+# they came from (warm: booted pool simulator, cold: shut-down one, new: just made, erased: a pool one that had to
+# be erased, failed: a pool one that broke and was replaced, session: made for this run).
 sims_ready() {
   local last; last=$(sort -n "$W"/done.* 2>/dev/null | tail -1)
   say sims $((${last:-$SIMS_T0} - SIMS_T0)) "$(cat "$W"/how.* 2>/dev/null | sort | uniq -c | awk '{printf "%s%s=%s", s, $2, $1; s=","}')"
