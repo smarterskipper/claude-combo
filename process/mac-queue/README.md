@@ -97,6 +97,8 @@ Measured on mini1 on 2026-11-18, ScrapwingTests at 53154132 (98 tests), 2 simula
 | Pool, first run of a new session | 25 s | 7 s |
 | Pool, the next run, another new session | 24 s | 6 s |
 
+The Scrapwing build's own jobs were running on the same Macs during these runs, so whole-run times move by a few seconds. Start to first test is the steadier number. Both Macs got warm pool simulators within 4 s in the same evening's two-Mac runs: ScrapwingUITests (320 s, set by its one 311 s test) and MenosTests (4620 tests, 61 s). After the Menos run, no simulator's photo, contact or Health count had changed, so the next run erased nothing.
+
 Before, the build waited for `xq sim` to make and first-boot the first simulator, and the shards then waited for the second one. A wipe on a warm pool simulator takes about 2 s and runs behind the build. Counting changes rather than file times matters: every boot writes to the Photos, Contacts, Calendar and Health databases. Calendar is not counted, because it fills in its holidays (4 items, then 126) in the half-minute after a boot. A run that only adds calendar events is therefore not caught.
 
 ### Clean-up
