@@ -51,12 +51,16 @@ cat > "$T/bin/plutil" <<'S'
 #!/bin/bash
 cat
 S
+cat > "$T/bin/sqlite3" <<'S'
+#!/bin/bash
+t=${2##* }; cat "$STUB/count.$t" 2>/dev/null || echo 0
+S
 cat > "$T/bin/df" <<'S'
 #!/bin/bash
 echo "Filesystem 1G-blocks Used Available Capacity Mounted"
 echo "/dev/disk3s5 460 400 $(cat "$STUB/free") 90% /"
 S
-chmod +x "$T/bin/xcrun" "$T/bin/df" "$T/bin/plutil"
+chmod +x "$T/bin/xcrun" "$T/bin/df" "$T/bin/plutil" "$T/bin/sqlite3"
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok   $1"; }
 no() { fail=$((fail+1)); echo "FAIL $1"; }
@@ -175,7 +179,7 @@ check "enough disk: no warning, nothing deleted" '! grep -q WARNING "$T/out" && 
 # --- xq test's simulator pool ---
 # An empty Mac apart from one ordinary booted simulator whose session holds no slot.
 pool_reset() {
-  rm -rf "$XQ_DIR" "$T/devices" "$T/apps" "$T/listapps-fail" "$T/uninstall-noop"; : > "$T/log"
+  rm -rf "$XQ_DIR" "$T/devices" "$T/apps" "$T/listapps-fail" "$T/uninstall-noop" "$T"/count.*; : > "$T/log"
   mkdir -p "$XQ_DIR/slots" "$XQ_DIR/queue" "$T/apps"; : > "$XQ_KEEP_FILE"; echo 200 > "$T/free"
   python3 -c 'import json,sys; json.dump({"devices": {"com.apple.CoreSimulator.SimRuntime.iOS-26-4": [
     {"name": "xq-idle-1", "udid": "00000001-0000-0000-0000-000000000000", "state": "Booted", "isAvailable": True,
@@ -228,13 +232,16 @@ pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1); touch "$
 check "an app list it can't read: deleted too" '[ $rc -ne 0 ] && grep -q "^delete $u" "$T/log"'
 
 pool_reset; "$XQ" lease a 1 $$ >/dev/null 2>&1; u=$(udid_of xq-pool-1); d=$T/devices/$u
-mkdir -p "$d/data/Media/PhotoData" "$d/data/Library/AddressBook"; touch "$d/data/Library/AddressBook/old.db"
-touch -d '1 hour ago' "$d/data/Library/AddressBook/old.db"; touch -d '30 min ago' "$d/xq-wiped"
+mkdir -p "$d/data/Media/DCIM/100APPLE" "$d/data/Library/AddressBook"; touch "$d/data/Media/DCIM/100APPLE/IMG_0001.JPG"
+touch "$d/data/Library/AddressBook/AddressBook.sqlitedb"; echo 6 > "$T/count.ABPerson"
 "$XQ" ready pool-1 > "$T/out" 2>&1
-check "an untouched Photos/Contacts store: no erase" '! grep -q "^erase" "$T/log" && grep -q "^uninstall\|^keychain" "$T/log"'
-touch "$d/data/Media/PhotoData/Photos.sqlite"; touch -d '1 min ago' "$d/xq-wiped"; : > "$T/log"
-"$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
-check "a run that wrote to Photos gets an erase" '[ $rc -eq 0 ] && grep -q "^erase $u" "$T/log" && grep -q "^boot $u" "$T/log" && ! grep -q "^keychain" "$T/log"'
+check "the wipe keeps the photo, contact and Health counts" '[ "$(cat "$d/xq-wiped")" = "photos=1 contacts=6 health=0" ]'
+: > "$T/log"; touch "$d/data/Library/AddressBook/AddressBook.sqlitedb"; "$XQ" ready pool-1 > "$T/out" 2>&1
+check "databases written to but no new photos or contacts: no erase" '! grep -q "^erase" "$T/log" && grep -q "^keychain" "$T/log"'
+touch "$d/data/Media/DCIM/100APPLE/IMG_0002.JPG"; : > "$T/log"; "$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
+check "a run that added a photo gets an erase" '[ $rc -eq 0 ] && grep -q "^erase $u" "$T/log" && grep -q "^boot $u" "$T/log" && ! grep -q "^keychain" "$T/log"'
+echo 7 > "$T/count.ABPerson"; : > "$T/log"; "$XQ" ready pool-1 > "$T/out" 2>&1
+check "so does one that added a contact" 'grep -q "^erase $u" "$T/log"'
 pool_reset; "$XQ" ready pool-1 > "$T/out" 2>&1; rc=$?
 check "ready of an unleased simulator is refused" '[ $rc -ne 0 ]'
 

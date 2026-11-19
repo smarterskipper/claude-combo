@@ -17,8 +17,8 @@
 #   xq unlease <pid> <pool-k>...   hand them back (a dead or over-time pid's lease ends by itself)
 # The pool: one shared set of booted iPhone simulators per Mac, at most XQ_POOL_MAX (2 per slot), so a run skips
 # the create and the 50 s first boot. ready uninstalls every user app (data and app-group containers go with
-# them) and resets the keychain, permissions and pasteboard. A run that wrote to Photos, Contacts, Calendar or
-# Health gets its simulator erased instead. Slot grabs leave pool simulators booted; one unused for XQ_POOL_IDLE
+# them) and resets the keychain, permissions and pasteboard. A run that added photos, contacts or Health samples
+# gets its simulator erased instead. Slot grabs leave pool simulators booted; one unused for XQ_POOL_IDLE
 # (2h) is shut down, and prune deletes it like any other run simulator.
 # Run simulators are what `xq sim` makes: an iPhone 17 Pro on the default runtime. prune and drop never touch
 # other devices or runtimes, the POOL below, names in ~/.config/xq/keep-sims (one glob per line), a booted
@@ -42,8 +42,6 @@ LOW_GB=${XQ_LOW_GB:-30}; LOW_AGE=${XQ_LOW_AGE:-3h}; PY=${XQ_PY:-/usr/bin/python3
 KEEP_FILE=${XQ_KEEP_FILE:-$HOME/.config/xq/keep-sims}
 POOL_MAX=${XQ_POOL_MAX:-$((SLOTS * 2))}; POOL_IDLE=${XQ_POOL_IDLE:-7200}
 SIM_HOME=${XQ_SIM_HOME:-$HOME/Library/Developer/CoreSimulator/Devices}
-# Shared stores an app can write to that survive its uninstall (paths under the simulator's data folder).
-STORES='Library/AddressBook Library/Calendar Library/Health Media/PhotoData'
 # Long-lived simulators, reused on purpose (a new one costs a cold first run, and first-boot banners in shots).
 POOL='xq-tf* xq-shots-* xq-ftime-* xq-freelooks xq-fulltest xq-fulltest-*'
 mkdir -p "$Q/slots" "$Q/queue" "$Q/seen" "$Q/pool"
@@ -450,11 +448,20 @@ for k, v in json.load(sys.stdin).items():
 
 # Wipes what the last run left on booted pool simulator $1 ($2 its udid). Removing an app removes its data, its
 # app-group and extension containers; the keychain, permission grants and pasteboard survive that, so they are
-# reset. Photos, Contacts, Calendar and Health survive too, and a run that wrote to them gets an erase.
+# reset. Photos, Contacts and Health survive too: their counts are kept after each wipe, and a run that changed
+# them gets an erase. Every boot writes to those databases, so it's the counts, not the file times. Calendar
+# isn't counted: it seeds its holidays in the background for a while after a boot.
+pool_counts() {
+  local d=$1/data
+  echo "photos=$(find "$d/Media/DCIM" -type f 2>/dev/null | wc -l | tr -d ' ')" \
+    "contacts=$(db_count "$d/Library/AddressBook/AddressBook.sqlitedb" ABPerson)" \
+    "health=$(db_count "$d/Library/Health/healthdb_secure.sqlite" samples)"
+}
+db_count() { [ -e "$1" ] || { echo 0; return; }; with_timeout 20 sqlite3 "file:$1?mode=ro" "select count(*) from $2" 2>/dev/null || echo "?"; }
 pool_wipe() {
   local name=$1 u=$2 dir="$SIM_HOME/$2" a apps left
-  if [ -e "$dir/xq-wiped" ] && [ -n "$(cd "$dir/data" 2>/dev/null && find $STORES -newer "$dir/xq-wiped" -type f 2>/dev/null | head -1)" ]; then
-    echo "xq: xq-$name: the last run wrote to Photos, Contacts, Calendar or Health; erasing it (one first boot)" >&2
+  if [ -s "$dir/xq-wiped" ] && [ "$(pool_counts "$dir")" != "$(cat "$dir/xq-wiped")" ]; then
+    echo "xq: xq-$name: the last run added photos, contacts or Health samples ($(cat "$dir/xq-wiped") -> $(pool_counts "$dir")); erasing it" >&2
     with_timeout 60 xcrun simctl shutdown "$u" >/dev/null 2>&1
     with_timeout 120 xcrun simctl erase "$u" >/dev/null 2>&1 || return 1
     rm -f "$Q/seen/.mad-$u"; ( sim "$name" ) >/dev/null || return 1
@@ -466,7 +473,7 @@ pool_wipe() {
     with_timeout 30 xcrun simctl privacy "$u" reset all >/dev/null 2>&1 || return 1
     with_timeout 30 xcrun simctl pbcopy "$u" </dev/null >/dev/null 2>&1 || return 1
   fi
-  mkdir -p "$dir" && touch "$dir/xq-wiped"
+  mkdir -p "$dir" && pool_counts "$dir" > "$dir/xq-wiped"
 }
 
 # Deletes pool simulator $1 and its lease: it couldn't be booted or wiped, so nobody gets it.

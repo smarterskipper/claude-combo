@@ -73,7 +73,7 @@ Tests: `python3 test-xq-test.py` covers the split, the merge and the clean-up co
 `xq test` takes its simulators from a pool on each Mac, `xq-pool-1`, `xq-pool-2`, …, shared by every session. A pool simulator stays booted between runs, so the next run skips the create and the boot. A new simulator's first boot alone takes 56 s on the MacBook. Before, each run made `xq-<session>-<n>`, booted it and deleted it at the end, and each Scrapwing ticket is a new session.
 
 - **Clean on the way out.** `xq ready` runs when a run takes a simulator, not when the last run gives it back, so a killed run can't pass its data on. It uninstalls every user app, which takes the app's data, app-group and widget containers with it (checked with Menos's `group.com.menosapp.ios`). It also resets the keychain, permission grants and pasteboard. This takes about 1 s.
-- **Erased if a run wrote to shared stores.** Photos, Contacts, Calendar and Health survive an uninstall. A run that wrote to them gets its simulator erased, which costs one first boot.
+- **Erased if a run added to shared stores.** Photos, Contacts and Health survive an uninstall. Their counts (DCIM files, contacts, Health samples) are kept after each wipe, and a run that changed them gets its simulator erased. That costs one boot: 23 s on the MacBook for an erased simulator.
 - **Deleted if the clean-up fails.** If an app won't uninstall or the app list can't be read, the simulator is deleted, and that run makes its own the old way.
 - **Leases end by themselves.** A run leases its simulators under the slot lock. The lease ends when the run hands them back, when its job dies, or after 90 min.
 - **Capped.** A Mac's pool holds at most 2 simulators per slot (`XQ_POOL_MAX`): 4 on mini1, 6 on the MacBook, about 2 GB each. What a full pool can't give, the run makes as `xq-<session>-<n>` and deletes at the end, as before.
@@ -88,6 +88,16 @@ Tests: `python3 test-xq-test.py` covers the split, the merge and the clean-up co
 ```
 
 `warm` is a booted pool simulator, `cold` a shut-down one, `new` one just made, and `session` one made for this run.
+
+Measured on mini1 on 2026-11-18, ScrapwingTests at 53154132 (98 tests), 2 simulators, one Mac, lane already warm:
+
+| Run | Whole run | Start to first test |
+|---|---|---|
+| Before: new `xq-<session>-<n>` simulators each run | 117 s | 90 s |
+| Pool, first run of a new session | 25 s | 7 s |
+| Pool, the next run, another new session | 24 s | 6 s |
+
+Before, the build waited for `xq sim` to make and first-boot the first simulator, and the shards then waited for the second one. A wipe on a warm pool simulator takes about 2 s and runs behind the build. Counting changes rather than file times matters: every boot writes to the Photos, Contacts, Calendar and Health databases. Calendar is not counted, because it fills in its holidays (4 items, then 126) in the half-minute after a boot. A run that only adds calendar events is therefore not caught.
 
 ### Clean-up
 
