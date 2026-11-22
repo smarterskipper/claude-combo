@@ -47,8 +47,10 @@ Runs in one session go one at a time, so gates can all share `fulltest`. The lan
 
 How the split stays safe:
 
-- Times come from the last green run, in `~/.cache/xq/timings/`. With no times yet, the whole suite runs as one shard and saves them.
-- The first shard skips what the other shards run, instead of listing what it runs, so a new test always runs somewhere. A run fails if a shard runs nothing, a test runs twice, or under 95% of the last green run's tests ran.
+- Times come from the last green run, in `~/.cache/xq/timings/<repo>.<scheme>.tsv`. With no times yet, the whole suite runs as one shard and saves them. Every branch of a repo shares this file, and the last branch to pass rewrites it.
+- The build Mac's worker scans the scheme's folder at the ref for `class` names and `func test…` names. A timed test counts only if both its class and its method turn up. The rest are another branch's tests, or tests removed on purpose, and are left out of the plan and the count. `xq test` says how many it left out. If the scan finds nothing, every timed test counts, as before.
+- The first shard skips what the other shards run, instead of listing what it runs, so a new test always runs somewhere. A run fails if a shard runs nothing, a test runs twice, or under 95% of the timed tests this build has ran. That last check catches a shard that stopped short.
+- Before 2026-11-21 the count was every test in the timings file. A branch with fewer tests than the last branch to pass then failed with every test green. Scrapwing's `feature/monetisation` ran its 21 UI tests green against another branch's 26. Its plan could also give a shard only tests the branch lacked, and that shard then "ran no tests".
 - A class too big for one shard is split by method (`SessionRenderTests` is 35 s of the 78 s).
 - Tests that read repo files through `#filePath` or `SourceTree` have the build Mac's path compiled in, so their classes stay on the build Mac. The worker finds them by grep on every run. A test that finds repo files some other way fails on the second Mac with "no such file": add its marker to the grep in `xq-test-worker.sh`.
 - A shard that can't launch the test runner gets one more try, because a just-booted simulator sometimes refuses the first launch. A test failure never retries.
@@ -64,7 +66,7 @@ Measured at menos-ios fedbaf3e7 (3853 tests, 6 skipped, 0 failed), 2026-11-07, b
 
 Most of the time left is the build. `-collect-test-diagnostics never` alone saves about 9 s per `xcodebuild` run, and the failure text is still in the log. Xcode's own `-parallel-testing-enabled` doesn't help: 96 s with 4 workers against 90 s without, because it clones and boots simulators on each run and keeps a class on one worker.
 
-Tests: `python3 test-xq-test.py` covers the split, the merge and the clean-up commands.
+Tests: `python3 test-xq-test.py` covers the split, the merge, the shared timings across branches (`Branches`) and the clean-up commands.
 
 ## Simulators and disk space
 

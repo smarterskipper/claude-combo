@@ -124,6 +124,12 @@ inner)
   grep -rlE '#filePath|#file([^A-Za-z]|$)|SourceTree' "$SCHEME" --include='*.swift' 2>/dev/null | while IFS= read -r f; do
     sed -nE 's/^([a-zA-Z@ ]* )?class ([A-Za-z0-9_]+).*/XQT pin \2/p' "$f"
   done
+  # This ref's test classes and test methods. The timings are shared by every branch, so xq-test plans and counts
+  # only the timed tests this build has. A rough scan is enough: an extra name only keeps a timed test in.
+  grep -rhoE '(^|[^A-Za-z0-9_])class +[A-Za-z0-9_]+' "$SCHEME" --include='*.swift' 2>/dev/null \
+    | sed -E 's/.*class +//' | sort -u | xargs -n 100 echo XQT class
+  grep -rhoE 'func +test[A-Za-z0-9_]*' "$SCHEME" --include='*.swift' 2>/dev/null \
+    | sed -E 's/func +//' | sort -u | xargs -n 100 echo XQT func
   # What the other Mac needs: the xctestrun and the bundles it names (the test bundle sits inside the app).
   SHIP=$(plutil -convert xml1 -o - "$X" | sed -nE 's#.*<string>__TESTROOT__/([^:<]*\.(app|appex))</string>.*#\1#p' \
     | grep -v '\.app/' | sort -u | while IFS= read -r p; do [ -e "$P/$p" ] && printf '%s,' "$p"; done)
