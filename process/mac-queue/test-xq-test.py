@@ -96,31 +96,94 @@ class Merge(unittest.TestCase):
         return {"name": "s", "rc": rc, "results": {("C", k): (v, 1.0) for k, v in results.items()}}
 
     def test_all_passed(self):
-        m = xt.merge([self.shard(a="passed"), self.shard(b="passed", c="skipped")], 0)
+        m = xt.merge([self.shard(a="passed"), self.shard(b="passed", c="skipped")], set())
         self.assertTrue(m["ok"])
         self.assertEqual((m["total"], m["skipped"], m["failed"]), (3, 1, []))
 
     def test_a_failed_test_fails_the_run(self):
-        m = xt.merge([self.shard(a="passed"), self.shard(b="failed")], 0)
+        m = xt.merge([self.shard(a="passed"), self.shard(b="failed")], set())
         self.assertFalse(m["ok"])
         self.assertEqual(m["failed"], ["C.b"])
 
     def test_a_shard_that_exited_badly_fails_the_run_even_if_no_test_failed(self):
-        self.assertFalse(xt.merge([self.shard(a="passed"), self.shard(rc=65, b="passed")], 0)["ok"])
+        self.assertFalse(xt.merge([self.shard(a="passed"), self.shard(rc=65, b="passed")], set())["ok"])
 
     def test_a_shard_that_ran_nothing_fails_the_run(self):
-        self.assertFalse(xt.merge([self.shard(a="passed"), self.shard()], 0)["ok"])
+        self.assertFalse(xt.merge([self.shard(a="passed"), self.shard()], set())["ok"])
 
     def test_a_test_run_twice_fails_the_run(self):
-        m = xt.merge([self.shard(a="passed"), self.shard(a="passed")], 0)
+        m = xt.merge([self.shard(a="passed"), self.shard(a="passed")], set())
         self.assertFalse(m["ok"])
         self.assertEqual(m["twice"], ["C.a"])
 
-    def test_far_fewer_tests_than_last_time_fails_the_run(self):
-        self.assertFalse(xt.merge([self.shard(a="passed", b="passed")], 100)["ok"])
+    def test_far_fewer_of_the_expected_tests_than_last_time_fails_the_run(self):
+        expected = {("C", "a"), ("C", "b")} | {("C", f"t{i}") for i in range(98)}
+        self.assertFalse(xt.merge([self.shard(a="passed", b="passed")], expected)["ok"])
 
     def test_a_few_tests_fewer_than_last_time_is_fine(self):
-        self.assertTrue(xt.merge([self.shard(a="passed", b="passed")], 2)["ok"])
+        expected = {("C", k) for k in "abcdefghijklmnopqrst"}   # 20; 19 ran
+        self.assertTrue(xt.merge([self.shard(**{k: "passed" for k in "abcdefghijklmnopqrs"})], expected)["ok"])
+
+
+# Branches of one repo share one timings file, which the last green run of any branch rewrites. The last green run
+# here was another branch's: it has class Shop, which this branch doesn't, and Hangar.testShop, removed on purpose.
+OTHER_BRANCH = {("Flight", m): 30.0 for m in ("testA", "testB", "testC")}
+OTHER_BRANCH.update({("Hangar", m): 20.0 for m in ("testOpen", "testTaxi", "testSettings", "testShop")})
+OTHER_BRANCH.update({("Shop", m): 40.0 for m in ("testBuy", "testRestore", "testPrice")})
+OTHER_BRANCH.update({("Run", m): 50.0 for m in ("testCrash", "testPause", "testStage")})
+THIS_BRANCH = {k for k in OTHER_BRANCH if k[0] != "Shop" and k[1] != "testShop"} | {("Run", "testNew")}
+# What the worker's scan of this branch's test folder reports (XQT class / XQT func).
+CLASSES = {c for c, _ in THIS_BRANCH} | {"TestHelpers"}
+FUNCS = {m for _, m in THIS_BRANCH} | {"testHelperNotATest"}
+
+
+def run_on_this_branch(shards, drop=()):
+    """What xcodebuild runs for each shard on THIS_BRANCH: the listed ids it has, or for the first shard everything
+    it has but the skipped ids. drop: tests a shard silently left out."""
+    def matches(key, ident):
+        parts = ident.split("/")
+        return parts[1] == key[0] and (len(parts) == 2 or parts[2] == key[1])
+    out = []
+    for i, s in enumerate(shards):
+        ids = [a.split(":", 1)[1] for a in s["args"]]
+        if i == 0:
+            ran = [k for k in THIS_BRANCH if not any(matches(k, x) for x in ids)]
+        else:
+            ran = [k for k in THIS_BRANCH if any(matches(k, x) for x in ids)]
+        out.append({"name": f"s{i}", "rc": 0,
+                    "results": {k: ("passed", 1.0) for k in sorted(ran) if k not in drop}})
+    return out
+
+
+class Branches(unittest.TestCase):
+    def verdict(self, drop=()):
+        here = xt.in_build(OTHER_BRANCH, CLASSES, FUNCS)
+        shards = xt.plan(here, set(), 2, 2, T)
+        return shards, xt.merge(run_on_this_branch(shards, drop), set(here))
+
+    def test_a_green_run_of_a_branch_with_fewer_tests_than_the_timings_passes(self):
+        _, m = self.verdict()
+        self.assertEqual(m["problems"], [])
+        self.assertTrue(m["ok"])
+        self.assertEqual(m["total"], len(THIS_BRANCH))
+
+    def test_no_shard_is_given_only_tests_this_build_lacks(self):
+        shards, _ = self.verdict()
+        for s in shards[1:]:
+            ids = listed(s["args"])
+            self.assertFalse([i for i in ids if "/Shop" in i or i.endswith("/testShop")], ids)
+
+    def test_the_timings_keep_only_tests_this_build_has(self):
+        self.assertEqual(set(xt.in_build(OTHER_BRANCH, CLASSES, FUNCS)), THIS_BRANCH - {("Run", "testNew")})
+
+    def test_a_shard_that_leaves_out_tests_this_build_has_still_fails(self):
+        here = set(xt.in_build(OTHER_BRANCH, CLASSES, FUNCS))
+        drop = set(sorted(here)[:3])
+        _, m = self.verdict(drop)
+        self.assertFalse(m["ok"])
+
+    def test_with_no_names_from_the_build_every_timed_test_stays(self):
+        self.assertEqual(xt.in_build(OTHER_BRANCH, set(), set()), OTHER_BRANCH)
 
 
 class Cleanup(unittest.TestCase):

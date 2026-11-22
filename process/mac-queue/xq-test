@@ -14,7 +14,8 @@ the building Mac. Only test runs: signing, archives and TestFlight never come he
 
 The split comes from the last green run's times in ~/.cache/xq/timings. The first shard skips what the others
 run, instead of listing what it runs, so a new test can't be missed. With no times yet the whole suite is one
-shard. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" and "** TEST SUCCEEDED **" lines.
+shard. Every branch shares the times, so only the timed tests this ref has (the worker scans the scheme's folder)
+are planned and counted: a run fails if under 95% of them ran. Logs: ~/.cache/xq/test-runs/<id>/. Prints the usual "Executed N tests" and "** TEST SUCCEEDED **" lines.
 
 Simulators come from each Mac's pool (xq-pool-<k>): booted, wiped of the last run's apps, keychain, permissions
 and pasteboard, and shared by every session, so a run skips the create and the first boot. What the pool can't
@@ -97,8 +98,19 @@ def parse_log(text):
     return found
 
 
-def merge(shards, last_total):
-    """One verdict from every shard's {name, rc, results}. last_total: test count of the last green run."""
+def in_build(timings, classes, funcs):
+    """The timings entries this build has: the worker found the class and the method in the scheme's folder at this
+    ref. Every branch of a repo shares one timings file, written by whichever branch passed last, so it can name
+    tests this ref doesn't have (another branch's, or removed on purpose). Those must not be planned, or a shard
+    gets nothing to run, nor counted. With no names from the build, every entry stays."""
+    if not classes:
+        return dict(timings)
+    return {k: v for k, v in timings.items() if k[0] in classes and k[1] in funcs}
+
+
+def merge(shards, expected):
+    """One verdict from every shard's {name, rc, results}. expected: the (class, method) names that should run,
+    the last green run's tests that this build has. Under 95% of them ran means a shard stopped short."""
     seen, twice, failed, problems = {}, [], [], []
     for s in shards:
         if s["rc"] != 0:
@@ -114,8 +126,9 @@ def merge(shards, last_total):
                 failed.append(name)
     if twice:
         problems.append(f"{len(twice)} tests ran twice")
-    if len(seen) < last_total * 0.95:
-        problems.append(f"only {len(seen)} tests ran, the last green run had {last_total}")
+    ran = sum(1 for k in expected if k in seen)
+    if ran < len(expected) * 0.95:
+        problems.append(f"only {ran} of the {len(expected)} tests this build has from the last green run ran")
     skipped = sum(1 for r in seen.values() if r == "skipped")
     return {"ok": not failed and not problems, "total": len(seen), "skipped": skipped,
             "failed": sorted(failed), "twice": sorted(twice), "problems": problems}
@@ -157,6 +170,7 @@ class Job:
 
     def __init__(self, mac, session, cmd):
         self.mac, self.events, self.shards = mac, [], {}
+        self.classes, self.funcs = set(), set()   # this build's test classes and test methods (XQT class/func)
         self.built = threading.Event()
         self.failure = None
         env = dict(os.environ, XQ_HOST=mac)
@@ -176,6 +190,10 @@ class Job:
                 self.built.set()
             elif p[1] == "pin":
                 self.events.append(p)
+            elif p[1] == "class":
+                self.classes.update(p[2:])
+            elif p[1] == "func":
+                self.funcs.update(p[2:])
             elif p[1] == "sims":
                 print(f"  [{self.mac}] simulators ready {p[2]} s after the start ({p[3] if len(p) > 3 else '?'})",
                       flush=True)
@@ -296,21 +314,25 @@ def main():
         build_secs, products, xctestrun, ship = int(built[2]), built[3], built[4], [p for p in built[5].split(",") if p]
         t_built = time.time()
         pins = {e[2] for e in job_a.events if e[1] == "pin"}
+        here = in_build(timings, job_a.classes, job_a.funcs)
+        if len(here) < len(timings):
+            print(f"xq test: {len(timings) - len(here)} of the {len(timings)} timed tests aren't in this build "
+                  "(another branch's), so they're left out of the plan and the count", flush=True)
 
         other, sims_b = None, 0
-        if not a.one_mac and timings:
+        if not a.one_mac and here:
             rows = [(m, r) for m, r in free_macs().items() if m != mac and r[0] > 0]
             if rows:   # the smallest share of slots in use; ties keep list order
                 m, (_, slots, busy, _) = min(rows, key=lambda x: (x[1][1] - x[1][0]) / x[1][1])
                 other, sims_b = m, (a.sims if busy == 0 else 1)
-        shards = plan(timings, pins, sims_a, sims_b, a.scheme, B_START_DELAY if other else 0)
+        shards = plan(here, pins, sims_a, sims_b, a.scheme, B_START_DELAY if other else 0)
         counts = collections.Counter()
         for s in shards:
             counts[s["mac"]] += 1
             s["name"] = f"{s['mac']}{counts[s['mac']]}"
             with open(os.path.join(run_dir, s["name"] + ".args"), "w") as f:
                 f.write("".join(x + "\n" for x in s["args"]))
-        est = shard_seconds(shards, timings, a.scheme)
+        est = shard_seconds(shards, here, a.scheme)
         print(f"xq test: built in {build_secs} s; shards " +
               ", ".join(f"{s['name']} ~{e:.0f} s" for s, e in zip(shards, est)) +
               (f" (b = {other})" if counts["b"] else " (one Mac)"), flush=True)
@@ -348,7 +370,7 @@ def main():
             path = os.path.join(run_dir, s["name"] + ".log")
             text = open(path, errors="replace").read() if os.path.exists(path) else ""
             merged.append({"name": s["name"], "rc": info["rc"], "results": parse_log(text)})
-        v = merge(merged, len(timings))
+        v = merge(merged, set(here))
         if send_rc[0]:
             v["problems"].append(f"copying the app to {other} failed")
             v["ok"] = False
