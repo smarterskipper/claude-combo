@@ -126,15 +126,17 @@ class Merge(unittest.TestCase):
 
 
 # Branches of one repo share one timings file, which the last green run of any branch rewrites. The last green run
-# here was another branch's: it has class Shop, which this branch doesn't, and Hangar.testShop, removed on purpose.
+# here was another branch's: it has class Shop, which this branch doesn't, Hangar.testShop, removed on purpose, and
+# Hangar.testTaxi, which this branch moved to Run.
 OTHER_BRANCH = {("Flight", m): 30.0 for m in ("testA", "testB", "testC")}
 OTHER_BRANCH.update({("Hangar", m): 20.0 for m in ("testOpen", "testTaxi", "testSettings", "testShop")})
 OTHER_BRANCH.update({("Shop", m): 40.0 for m in ("testBuy", "testRestore", "testPrice")})
 OTHER_BRANCH.update({("Run", m): 50.0 for m in ("testCrash", "testPause", "testStage")})
-THIS_BRANCH = {k for k in OTHER_BRANCH if k[0] != "Shop" and k[1] != "testShop"} | {("Run", "testNew")}
-# What the worker's scan of this branch's test folder reports (XQT class / XQT func).
-CLASSES = {c for c, _ in THIS_BRANCH} | {"TestHelpers"}
-FUNCS = {m for _, m in THIS_BRANCH} | {"testHelperNotATest"}
+THIS_BRANCH = ({k for k in OTHER_BRANCH if k[0] != "Shop" and k[1] not in ("testShop", "testTaxi")}
+               | {("Run", "testNew"), ("Run", "testTaxi")})
+# What the worker's scan of this branch's test folder reports (XQT tests <type> <methods>): each test method with
+# the type declared above it, plus a helper type's test-named method that isn't a test.
+SCAN = THIS_BRANCH | {("TestHelpers", "testHelperNotATest")}
 
 
 def run_on_this_branch(shards, drop=()):
@@ -157,7 +159,7 @@ def run_on_this_branch(shards, drop=()):
 
 class Branches(unittest.TestCase):
     def verdict(self, drop=()):
-        here = xt.in_build(OTHER_BRANCH, CLASSES, FUNCS)
+        here = xt.in_build(OTHER_BRANCH, SCAN)
         shards = xt.plan(here, set(), 2, 2, T)
         return shards, xt.merge(run_on_this_branch(shards, drop), set(here))
 
@@ -171,19 +173,22 @@ class Branches(unittest.TestCase):
         shards, _ = self.verdict()
         for s in shards[1:]:
             ids = listed(s["args"])
-            self.assertFalse([i for i in ids if "/Shop" in i or i.endswith("/testShop")], ids)
+            self.assertFalse([i for i in ids if "/Shop" in i or i.endswith("/testShop") or "Hangar/testTaxi" in i], ids)
 
     def test_the_timings_keep_only_tests_this_build_has(self):
-        self.assertEqual(set(xt.in_build(OTHER_BRANCH, CLASSES, FUNCS)), THIS_BRANCH - {("Run", "testNew")})
+        self.assertEqual(set(xt.in_build(OTHER_BRANCH, SCAN)), THIS_BRANCH - {("Run", "testNew"), ("Run", "testTaxi")})
+
+    def test_a_test_moved_to_another_class_is_not_expected_in_its_old_class(self):
+        self.assertNotIn(("Hangar", "testTaxi"), xt.in_build(OTHER_BRANCH, SCAN))
 
     def test_a_shard_that_leaves_out_tests_this_build_has_still_fails(self):
-        here = set(xt.in_build(OTHER_BRANCH, CLASSES, FUNCS))
+        here = set(xt.in_build(OTHER_BRANCH, SCAN))
         drop = set(sorted(here)[:3])
         _, m = self.verdict(drop)
         self.assertFalse(m["ok"])
 
     def test_with_no_names_from_the_build_every_timed_test_stays(self):
-        self.assertEqual(xt.in_build(OTHER_BRANCH, set(), set()), OTHER_BRANCH)
+        self.assertEqual(xt.in_build(OTHER_BRANCH, set()), OTHER_BRANCH)
 
 
 class Cleanup(unittest.TestCase):

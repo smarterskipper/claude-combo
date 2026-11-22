@@ -98,14 +98,15 @@ def parse_log(text):
     return found
 
 
-def in_build(timings, classes, funcs):
-    """The timings entries this build has: the worker found the class and the method in the scheme's folder at this
-    ref. Every branch of a repo shares one timings file, written by whichever branch passed last, so it can name
-    tests this ref doesn't have (another branch's, or removed on purpose). Those must not be planned, or a shard
-    gets nothing to run, nor counted. With no names from the build, every entry stays."""
-    if not classes:
+def in_build(timings, tests):
+    """The timings entries this build has: tests holds the (class, method) names the worker found at this ref, each
+    method under the class or extension declared above it. Every branch of a repo shares one timings file, written
+    by whichever branch passed last, so it can name tests this ref doesn't have (another branch's, moved, or removed
+    on purpose). Those must not be planned, or a shard gets nothing to run, nor counted. With no names from the
+    build, every entry stays."""
+    if not tests:
         return dict(timings)
-    return {k: v for k, v in timings.items() if k[0] in classes and k[1] in funcs}
+    return {k: v for k, v in timings.items() if k in tests}
 
 
 def merge(shards, expected):
@@ -170,7 +171,7 @@ class Job:
 
     def __init__(self, mac, session, cmd):
         self.mac, self.events, self.shards = mac, [], {}
-        self.classes, self.funcs = set(), set()   # this build's test classes and test methods (XQT class/func)
+        self.tests = set()   # this build's (class, method) names, from XQT tests
         self.built = threading.Event()
         self.failure = None
         env = dict(os.environ, XQ_HOST=mac)
@@ -190,10 +191,8 @@ class Job:
                 self.built.set()
             elif p[1] == "pin":
                 self.events.append(p)
-            elif p[1] == "class":
-                self.classes.update(p[2:])
-            elif p[1] == "func":
-                self.funcs.update(p[2:])
+            elif p[1] == "tests":
+                self.tests.update((p[2], m) for m in p[3:])
             elif p[1] == "sims":
                 print(f"  [{self.mac}] simulators ready {p[2]} s after the start ({p[3] if len(p) > 3 else '?'})",
                       flush=True)
@@ -314,7 +313,7 @@ def main():
         build_secs, products, xctestrun, ship = int(built[2]), built[3], built[4], [p for p in built[5].split(",") if p]
         t_built = time.time()
         pins = {e[2] for e in job_a.events if e[1] == "pin"}
-        here = in_build(timings, job_a.classes, job_a.funcs)
+        here = in_build(timings, job_a.tests)
         if len(here) < len(timings):
             print(f"xq test: {len(timings) - len(here)} of the {len(timings)} timed tests aren't in this build "
                   "(another branch's), so they're left out of the plan and the count", flush=True)
