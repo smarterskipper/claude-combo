@@ -124,12 +124,17 @@ inner)
   grep -rlE '#filePath|#file([^A-Za-z]|$)|SourceTree' "$SCHEME" --include='*.swift' 2>/dev/null | while IFS= read -r f; do
     sed -nE 's/^([a-zA-Z@ ]* )?class ([A-Za-z0-9_]+).*/XQT pin \2/p' "$f"
   done
-  # This ref's test classes and test methods. The timings are shared by every branch, so xq-test plans and counts
-  # only the timed tests this build has. A rough scan is enough: an extra name only keeps a timed test in.
-  grep -rhoE '(^|[^A-Za-z0-9_])class +[A-Za-z0-9_]+' "$SCHEME" --include='*.swift' 2>/dev/null \
-    | sed -E 's/.*class +//' | sort -u | xargs -n 100 echo XQT class
-  grep -rhoE 'func +test[A-Za-z0-9_]*' "$SCHEME" --include='*.swift' 2>/dev/null \
-    | sed -E 's/func +//' | sort -u | xargs -n 100 echo XQT func
+  # This ref's tests: each `func test...` under the last top-level (unindented) class or extension above it in its
+  # file, so a nested helper class or a comment that says "class" doesn't take it. The timings are shared by every
+  # branch, so xq-test plans and counts only the timed tests this build has. A test this misses (say, an inherited
+  # one) only drops out of the count, and still runs in the first shard.
+  find "$SCHEME" -name '*.swift' -print0 2>/dev/null | xargs -0 awk '
+    function flush(  t) { for (t in m) print "XQT tests " t m[t]; split("", m); ty = "" }
+    FNR == 1 { flush() }
+    match($0, /^(@[A-Za-z0-9_]+[ \t]+)*((final|public|private|fileprivate|internal|open|package)[ \t]+)*(class|extension)[ \t]+[A-Za-z0-9_]+/) {
+      ty = substr($0, RSTART, RLENGTH); sub(/.*(class|extension)[ \t]+/, "", ty) }
+    ty != "" && match($0, /func +test[A-Za-z0-9_]*/) { f = substr($0, RSTART, RLENGTH); sub(/func +/, "", f); m[ty] = m[ty] " " f }
+    END { flush() }' 2>/dev/null
   # What the other Mac needs: the xctestrun and the bundles it names (the test bundle sits inside the app).
   SHIP=$(plutil -convert xml1 -o - "$X" | sed -nE 's#.*<string>__TESTROOT__/([^:<]*\.(app|appex))</string>.*#\1#p' \
     | grep -v '\.app/' | sort -u | while IFS= read -r p; do [ -e "$P/$p" ] && printf '%s,' "$p"; done)
